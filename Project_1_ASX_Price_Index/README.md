@@ -31,7 +31,7 @@ The best fitting model is the Autoregressive Distributed Lag (ADRL(12,4)) model 
 ## Files
 - `README.md`: This file.
 - `Forecasting  - Project 1.Rmd`: The R Markdown file with code and analysis.
-- `project.html`: The HTML report of the analysis.
+- `Forecasting_ Project 1.html`: The HTML report of the analysis.
 - `ASX_data.csv`: The dataset used for forecasting.
 
 ## Report
