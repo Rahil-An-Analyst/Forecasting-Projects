@@ -1,0 +1,3804 @@
+---
+title: "Forecasting: Project 3"
+subtitle: "Time Series Forecasting and Regression Modeling: Mortality, First Flowering Day, and Rank-Based Order Analysis"
+author: "Shaikh Mohammad Rahil - s3960736"
+date: "`22-10-2023`"
+output: 
+  html_document: 
+    toc: true
+  pdf_document: default
+toc-title: "Table of Contents"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(GGally) # for ggpairs()
+library(TSA) # season(), prewhiten() and other functions
+library(tseries) # adf.test()
+library(forecast) # BoxCox.lambda()
+library(dLagM) # For DLM modelling
+library(car) # for vif()
+library(tis) # for Lag()
+library(dynlm) # for Dynamic linear modeling
+library(stats) # for classical decomposition
+library(x12) # X-12-ARIMA decomposition
+library(lmtest) # for bgtest()
+library(dplyr) # for arrange()
+```
+
+#### General note:
+
+A significance level $\alpha=5\%$ is used.
+
+# Task 1: Four-Week Ahead Mortality Forecasting in Paris Using Multiple Predictors
+
+## Data Description
+
+The dataset holds 6 columns and 508 observations. They are, Index column, the disease specific averaged weekly mortality in Paris, France, the city’s local climate (temperature degrees Fahrenheit), size of pollutants and levels of noxious chemical emissions from cars and industry in the air - all measured at the same points between 2010-2020.
+
+## Objective
+
+Our aim for the mort dataset is to give best 4 weeks ahead forecasts by determining the most accurate and suitable regression model that determines the average weekly mortality in Paris in terms of MASE using multiple predictors. A descriptive analysis will be conducted initially. Model-building strategy will be applied to find the best fitting model from the time series regression methods (dLagM package), dynamic linear models (dynlm package), and exponential smoothing and corresponding state-space models.
+
+## Model Selection Criteria
+
+**MASE** <br />
+
+Out of various different error measures to assess the forecast accuracy, Mean absolute scaled error (MASE) is a generally applicable measure of forecast accuracy and is obtained by scaling the errors based on the in-sample MAE from the naive forecast method. It is the only available method which can be used in all circumstances and can be used to compare forecast accuracy between series as it is scale-free. 
+
+**Information Criteria (AIC and BIC)** <br />
+
+IC for model selection penalizes the likelihood criteria by the penalty of twice the number of parameters in the model in AIC and by number of parameters and the sample size (qlog(n)) in BIC. Or in simple terms, IC incorporates penalties to the maximum likelihood methods, thus given a better criteria for model selection.
+
+**Adjusted R Squared** <br />
+
+Comparison of models using adjusted R squared gives a rough estimate of how good the model fits the data in percentage.
+
+## Read Data
+
+```{r} 
+mort <- read.csv("C:/Users/admin/Downloads/mort.csv")
+mort = mort[,2:6] # remove index column
+head(mort)
+```
+
+
+## Identification of the response and the regressor variables
+
+For fitting a regression model, the response is **Mortality** and the 4 regressor variables are the **temperature**, **pollutants particle size**, and the two chemical emissions **(chem1, chem2)**.
+
+- y = Mortality = disease specific averaged weekly mortality in Paris
+- x1 = temp = city’s local climate (temperature degrees Fahrenheit)
+- x2 = chem1 = levels of noxious chemical emissions from cars in air
+- x3 = chem2 = levels of noxious chemical emissions from industry in air
+- x4 = particle.size = size of pollutants
+
+All the 5 variables are continuous variables.
+
+### Read Regressor and Response variables
+
+Lets first get the regressor and response as TS objects,
+
+```{r}
+Mortality = ts(mort[,1])
+Temp = ts(mort[,2])
+Chem1 = ts(mort[,3])
+Chem2 = ts(mort[,4])
+ParticleSize = ts(mort[,5])
+data.ts = ts(mort) # Y and x in single dataframe
+```
+
+### Relationship between Response and Regressor variables
+
+Lets scale, center and plot all the 4 variables together
+
+```{r}
+data.scale = scale(data.ts)
+plot(data.ts, plot.type="s", col=c("black", "red", "blue", "green", "yellow"), main = "Mortality (Black - Respone), Temperature (Red - X1),\n  Chemical 1 (Blue - X2), Chemical 2 (Green - X3), Particle size (Yellow - X4)")
+```
+
+It is hard to read the correlations between the regressors and the response and the among the response themselves. But it is fair to say the 5 variables show some correlations. Lets check for correlation statistically using ggpairs(),
+
+```{r}
+ggpairs(data = mort, columns = c(1,2,3,4,5), progress = FALSE) #library(GGally)
+```
+
+Hence, some correlations between the 4 regressors and response is present. We can generate regression model based on these correlations. First, lets look at the descriptive statistics
+
+
+## Descriptive Analysis
+
+Since we are generating regression model which estimates the response, **$Mortality$**, lets focus on Mortalitys statistics.
+
+
+### Summary statistics
+
+```{r}
+summary(Mortality)
+```
+The mean and median of the Mortality are very close indicating symmetrical distribution.
+
+### Time Series plot
+
+The time series plot for our data is generated using the following code chunk,
+
+```{r}
+plot(Mortality,ylab='Average weekly mortality in Paris',xlab='Weeks',
+     type='o', main="Average weekly mortality Trend (2010-2020/week1-week508)")
+```
+
+**Plot Inference :** <br />
+
+From Figure 1, we can comment on the time series’s,
+
+- **Trend:** The overall shape of the trend seems to follow an downward trend. Thus, indicating **non-stationarity**.
+
+- **Seasonality:** From the plot, seasonal behavior is quite evident every year. This needs to be confirmed using statistical tests.
+
+- **Change in Variance:** Variation is random and needs to be checked statistically.
+
+- **Behavior:** We notice mixed behavior of MA and AR series. AR behavior is dominant as we obverse more following data points. MA behavior is evident due to up and down fluctuations in the data points.
+
+- **Intervention/Change points:** No particular intervention point is seen. Week 150 might be an intervention point and will be checked if it caused significant change in mean value. 
+
+### ACF and PACF plots
+
+```{r}
+acf(Mortality, main="ACF of Average weekly mortality")
+pacf(Mortality, main ="PACF of Average weekly mortality")
+```
+
+- **ACF plot:** We notice multiple autocorrelations are significant. A slowly decaying pattern indicates **non stationary** series. We do not see any ‘wavish’ form. Thus, **no significant seasonal behavior** is observed.
+
+- **PACF plot:** We see 1 high vertical spike indicating **non stationary** series. We have observed non stationarity in the time series plot as well. Also, the second correlation bar is significant as well.
+
+### Check normality
+
+Many model estimating procedures assume normality of the residuals. If this assumption doesn’t hold, then the coefficient estimates are not optimum. Lets look at the Quantile-Quantile (QQ) plot to to observe normality visually and the Shapiro-Wilk test to statistically confirm the result.
+
+```{r}
+qqnorm(Mortality, main = "Normal Q-Q Plot of Average weekly mortality")
+qqline(Mortality, col = 2)
+```
+
+We see deviations from normality. Clearly, both the tails are off and most of the data in middle is off the line as well. Lets check statistically using shapiro-wilk test. Lets state the hypothesis of this test,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(Mortality)
+```
+
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, Mortality series is **not normally** distributed.
+
+### Test Stationarity
+
+The PACF plot of Mortality time series at the descriptive analysis stage of time series tells us nonstationarity in our time series. Lets use ADF and PP tests,
+
+**Using ADF (Augmented Dickey-Fuller) test :** <br />
+  
+Lets confirm the non-stationarity using Dickey-Fuller Test or ADF test. Lets state the hypothesis, <br />
+
+$H_0$ : Time series is Difference non-stationary <br />
+$H_a$ : Time series is Stationary
+
+```{r warning = FALSE}
+adf.test(Mortality) #library(tseries)
+```
+
+since p-value < 0.05, we reject null hypothesis of non stationarity. we can conclude that the **series is stationary** at 5% level of significance.
+
+**Using PP (Phillips-Perron) test :** <br />
+  
+The null and alternate hypothesis are same as ADF test.
+
+```{r}
+PP.test(Mortality)
+```
+
+According to the PP tests, Mortality series is **stationary** at 5% level
+
+### Conclusion from descriptive analysis:
+
+- From the time series plot, ACF plot, ADF and PP tests, we found our Mortality response **is stationary**. **Differencing is not required**.
+- Trend is **not normal**. Thus **Box-cox transformation is required**.
+
+Lets perform with Box-Cox transformation,
+
+
+## Transformations
+
+### Box-Cox transformation to improve normality 
+
+To improve normality in our Mortality time series, lets test Box-Cox transformations on the series
+
+```{r}
+lambda = BoxCox.lambda(Mortality, method = "loglik") # library(forecast)
+BC.Mortality = BoxCox(Mortality, lambda = lambda)
+```
+
+### Check Normality of BC transformed Mortality series
+
+Visually comparing the time series plots before and after box-cox transformation,
+
+```{r}
+par(mfrow=c(2,1))
+plot(BC.Mortality,ylab='Weekly Mortality',xlab='Time',
+     type='o', main="Box-Cox Transformed Mortality Time Series")
+points(y=BC.Mortality,x=time(BC.Mortality))
+plot(Mortality,ylab='Weekly Mortality',xlab='Time',
+     type='o', main="Original Mortality Time Series")
+points(y=Mortality,x=time(Mortality))
+par(mfrow=c(1,1))
+```
+
+From the plot, almost no improvement in the variance of the time series is visible after BC transformation. Lets check for normality using shapiro test,
+
+```{r}
+shapiro.test(BC.Mortality)
+```
+
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, **BC Transformed Mortality is not normal**.
+
+### Conclusion after BC transformation
+
+The BC transformed Mortality series is Stationary and not normal. **BC transformation was not effective**. 
+
+
+## Decomposition
+
+To observe the individual effects of the existing components and historical effects occurred in the past, lets perform decomposition of the Mortality time series. 
+The time series can be decomposed into are seasonal and trend components. STL decomposition method will be used.
+
+### STL decomposition
+
+Lets set t.window to 15 and look the STL decomposed plots,
+
+We can adjust the series for seasonality by subtracting the seasonal component from the original series using the following code chunk,
+
+```{r}
+# Code gist - Apply STL decomposition to get seasonally adjusted and trend adjusted and visually compare w.r.t to original time series
+
+MortalityX = ts(mort[,1], start = c(2010,1), frequency = 52) # set frequency
+stl.Mortality <- stl(window(MortalityX, start=c(2010,1)), t.window=15, s.window="periodic", robust=TRUE)
+
+par(mfrow=c(3,1))
+
+plot(MortalityX,ylab='Mortality',xlab='Time',
+     type='o', main="Original Mortality Time Series")
+
+plot(seasadj(stl.Mortality), ylab='Mortality Radiation',xlab='Time', main = "Seasonally adjusted Mortality")
+
+stl.Mortality.trend = stl.Mortality$time.series[,"trend"] # Extract the trend component from the output
+stl.Mortality.trend.adjusted = MortalityX - stl.Mortality.trend
+
+plot(stl.Mortality.trend.adjusted, ylab='Mortality',xlab='Time', main = "Trend adjusted Mortality")
+
+par(mfrow=c(1,1))
+```
+Not much change is visually seen in the trend adjusted series and the seasonally adjusted series compared to the original series. This indicates both the trend and seasonal components are 
+equally significant or insignificant for the Mortality time series.
+
+### Conclusion of Decomposition
+
+Neither significant trend nor seasonal components are found through decomposition. Thus, we expect the fitted model to have neither trend and seasonal components.
+
+
+## Modeling
+
+Time series regression methods namely, <br />
+  
+- A. Distributed lag models (dLagM package), 
+- B. Dynamic linear models (dynlm package)
+- C. Exponential smoothing and corresponding state-space models will be considered.
+
+### A. Distributed lag models 
+
+Based on whether the lags are known (Finite DLM) or undetermined (Infinite DLM), 4 major modelling methods will be tested, namely,
+
+- Basic Finite Distributed lag model,
+- Polynomial DLM,
+- Koyck transformed geometric DLM,
+- and Autoregressive DLM.
+
+#### Fit Finite DLM 
+
+The response of a finite DLM model with 1 regressor is represented as shown below, <br />
+  
+$Y_t = \alpha + \sum_{s=0}^{q} \beta_s X_{t-s} + \epsilon_t$ <br />
+
+where, <br />
+
+- $\alpha$ is intercept
+- $\beta_s$ is coefficient of s lagged response $X_t$ 
+- and $\epsilon_t$ is the error term
+
+In our dataset, we have 4 regressors, hence the model equation has X1, X2, X3 and x4 instead of just one regressor.
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = mortality ~ temp + chem1 + chem2 + particle.size, data = mort, q.min = 1, q.max = 12,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+**Note** - We are using Mortality and not the BC.Mortality (BC transformed Mortality series) as normality is violated in both of these.
+
+q = 12 has the smallest AIC and BIC scores. Fit model with q = 12, <br />
+
+Since there are 4 predictors, there are 4C1 + 4C2 + 4C3 + 4C4 = 15 possible combinations of predictors and hence 15 models to compare. Lets fit all these 15 models and compare based on AIC, BIC and MASE scores.
+
+```{r, results='hide'}
+DLM.model = dlm(formula = mortality ~ temp + chem1 + chem2 + particle.size, data = mort, q = 12)
+DLM.model1 = dlm(formula = mortality ~ temp , data = mort, q = 12)
+DLM.model2 = dlm(formula = mortality ~ chem1, data = mort, q = 12)
+DLM.model3 = dlm(formula = mortality ~ chem2, data = mort, q = 12)
+DLM.model4 = dlm(formula = mortality ~ particle.size, data = mort, q = 12)
+DLM.model5 = dlm(formula = mortality ~ temp + chem1, data = mort, q = 12)
+DLM.model6 = dlm(formula = mortality ~ temp + chem2, data = mort, q = 12)
+DLM.model7 = dlm(formula = mortality ~ temp + particle.size, data = mort, q = 12)
+DLM.model8 = dlm(formula = mortality ~ temp + chem1 + chem2, data = mort, q = 12)
+DLM.model9 = dlm(formula = mortality ~ temp + chem1 + particle.size, data = mort, q = 12)
+DLM.model10 = dlm(formula = mortality ~ temp + chem2 + particle.size, data = mort, q = 12)
+DLM.model11 = dlm(formula = mortality ~ chem1 + chem2 + particle.size, data = mort, q = 12)
+DLM.model12 = dlm(formula = mortality ~ chem1 + chem2 , data = mort, q = 12)
+DLM.model13 = dlm(formula = mortality ~ chem1 + particle.size, data = mort, q = 12)
+DLM.model14 = dlm(formula = mortality ~ chem2 + particle.size, data = mort, q = 12)
+
+Model <- c("DLM.model", "DLM.model1", "DLM.model2", "DLM.model3", "DLM.model4", "DLM.model5", "DLM.model6", "DLM.model7", "DLM.model8", "DLM.model9", "DLM.model10", "DLM.model11", "DLM.model12", "DLM.model13", "DLM.model14")
+AIC <- c(AIC(DLM.model), AIC(DLM.model1), AIC(DLM.model2), AIC(DLM.model3), AIC(DLM.model4),AIC(DLM.model5), AIC(DLM.model6), AIC(DLM.model7), AIC(DLM.model8), AIC(DLM.model9), AIC(DLM.model10), AIC(DLM.model11), AIC(DLM.model12), AIC(DLM.model13), AIC(DLM.model14))
+BIC <- c(BIC(DLM.model), BIC(DLM.model1), BIC(DLM.model2), BIC(DLM.model3), BIC(DLM.model4),BIC(DLM.model5), BIC(DLM.model6), BIC(DLM.model7), BIC(DLM.model8), BIC(DLM.model9), BIC(DLM.model10), BIC(DLM.model11), BIC(DLM.model12), BIC(DLM.model13), BIC(DLM.model14))
+MASE <- MASE(DLM.model, DLM.model1, DLM.model2, DLM.model3, DLM.model4, DLM.model5, DLM.model6, DLM.model7, DLM.model8, DLM.model9, DLM.model10, DLM.model11, DLM.model12, DLM.model13, DLM.model14)
+```
+
+```{r}
+data.frame(AIC, BIC, MASE) %>% arrange(MASE)
+```
+
+The best model as per MASE (best for forecasting) is the one with all 4 predictors, $DLM.model$.
+
+##### Diagnostic check for DLM.model (Residual analysis)
+
+We can apply a diagnostic check using checkresiduals() function from the forecast package.
+
+```{r}
+checkresiduals(DLM.model$model$residuals) # forecast package
+```
+
+In this output, <br />
+  
+- from the time series plot and histogram of residuals, there is an obvious non-random pattern and very high residual values that violate general assumptions.
+- the Ljung-Box test output is displayed. According to this test, the null hypothesis that a series of residuals exhibits no autocorrelation up-to lag 10 is violated. According to this test and ACF plot, we can conclude that the **serial correlation left in residuals is highly significant.**
+
+**Model Summary for Finite DLM model (DLM.model) :** <br />
+
+```{r}
+summary(DLM.model)
+```
+
+- Finite DLM model is significant
+- R-squared is 61.23%, Adjusted R-squared is 56.68%
+  
+Lets consider the effect of collinearity on these results. To inspect this issue, we will display variance inflation factors (VIFs). If the value of VIF is greater than 10, we can conclude that the effect of multicollinearity is high.
+
+```{r}
+vif(DLM.model$model) # variance inflation factors #library(car)
+```
+
+- There are few predictors having VIF > 10. Thus, Multicollinearity is significant.
+
+```{r}
+MASE(DLM.model)
+```
+
+##### Conclusion of Finite DLM model
+
+- **DLM.model** is best Finite DLM model and is significant.
+- **MASE is 0.7966763**
+- Low R-squared value of 61.23% suggests bad fit. Adjusted R-squared is 56.68%.
+- violations in the test of assumptions
+- Serial autocorrelation is significant
+- Multicollinearity is significant.
+
+**ATTENTION** - Lets summarise the models from here on and not go into each models details for simplicity <br />
+
+
+#### Fit Polynomial DLM model
+
+Polynomial DLM model helps remove the effect of multicollinearity, but our data has significant multicollinearity. Lets fit a polynomial DLM of order 2 and check if the polynomial component (order 2) reduces multicollinearity. Lets do this for each of the 4 regressors individually.
+
+**For Temperature regressor:** <br />
+
+```{r}
+PolyDLM.Temp = polyDlm(x = as.vector(Temp), y = as.vector(Mortality), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM.Temp)
+```
+
+Polynomial DLM model with Temperature as regressor variable is **significant** at 5% significance level.
+
+**For Chemical 1 regressor:** <br />
+
+```{r}
+PolyDLM.Chem1 = polyDlm(x = as.vector(Chem1), y = as.vector(Mortality), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM.Chem1)
+```
+
+Polynomial DLM model with Chemical 1 as regressor variable is **significant** at 5% significance level.
+
+**For Chemical 2 regressor:** <br />
+
+```{r}
+PolyDLM.Chem2 = polyDlm(x = as.vector(Chem2), y = as.vector(Mortality), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM.Chem2)
+```
+
+Polynomial DLM model with Chemical 2 as regressor variable is **significant** at 5% significance level.
+
+**For Particle Size regressor:** <br />
+  
+```{r}
+PolyDLM.ParticleSize = polyDlm(x = as.vector(ParticleSize), y = as.vector(Mortality), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM.ParticleSize)
+```
+
+Polynomial DLM model with Particle Size as regressor variable is **significant** at 5% significance level.
+
+Polynomial DLM models for each of the 4 regressors are significant. The 0th and 1st order regressors of copper price variable are significant, but the 2nd order regressor (z.t2) is 
+insignificant.
+
+##### PolyDLM Model selection
+
+```{r}
+MASE(PolyDLM.Temp, PolyDLM.Chem1, PolyDLM.Chem2, PolyDLM.ParticleSize) %>% arrange(MASE)
+```
+
+As per MASE measure, Polynomial DLM model with Chemical 1 as regressor is the best model for forecasting. 
+
+##### Diagnostic check for Polynomial DLM (Residual analysis)
+
+```{r}
+checkresiduals(PolyDLM.Chem1$model$residuals)
+```
+
+##### Conclusion of Polynomial DLM model
+
+- **PolyDLM.Chem1** with Chemical 1 as regressor is best Polynomial DLM model.
+- model is significant 
+- **MASE is 0.8944918**
+- Adjusted R-squared is 50.91% 
+- violations in the test of assumptions
+- Serial autocorrelation is significant
+
+#### Fit Koyck geometric DLM model
+
+Here the lag weights are positive and decline geometrically. This model is called infinite geometric DLM, meaning there are infinite lag weights. Koyck transformation is applied to implement this infinite geometric DLM model by subtracting the first lag of geometric DLM multiplied by $\phi$. The Koyck transformed model is represented as, <br />
+  
+$Y_t = \delta_1 + \delta_2Y_{t-1} + \nu_t$ <br />
+
+where $\delta_1 = \alpha(1-\phi), \delta_2 = \phi, \delta_3 = \beta$ and the random error after the transformation is $\nu_t = (\epsilon_t -\phi\epsilon_{t-1})$. <br />
+
+The koyckDlm() function is used to implement a two-staged least squares method to first estimate the $\hat{Y}_{t-1}$ and the estimate $Y_{t}$ through simple linear regression. Lets deduce Koyck geometric GLM models for each of the 4 regressors individually.
+
+
+**For Temperature regressor:** <br />
+
+```{r}
+Koyck.Temp = koyckDlm(x = as.vector(mort$temp) , y = as.vector(mort$mortality) )
+summary(Koyck.Temp$model, diagnostics = TRUE)
+```
+
+Koyck DLM model with Temperature as regressor variable is **significant** at 5% significance level.
+
+**For Chemical 1 regressor:** <br />
+  
+```{r}
+Koyck.Chem1 = koyckDlm(x = as.vector(mort$chem1) , y = as.vector(mort$mortality) )
+summary(Koyck.Chem1$model, diagnostics = TRUE)
+```
+
+Koyck DLM model with Chemical 1 as regressor variable is **significant** at 5% significance level.
+
+**For Chemical 2 regressor:** <br />
+  
+```{r}
+Koyck.Chem2 = koyckDlm(x = as.vector(mort$chem2) , y = as.vector(mort$mortality) )
+summary(Koyck.Chem2$model, diagnostics = TRUE)
+```
+
+Koyck DLM model with Chemical 2 as regressor variable is **significant** at 5% significance level.
+
+**For Pariticle size regressor:** <br />
+  
+```{r}
+Koyck.ParticleSize = koyckDlm(x = as.vector(mort$particle.size) , y = as.vector(mort$mortality) )
+summary(Koyck.ParticleSize$model, diagnostics = TRUE)
+```
+
+Koyck DLM model with Pariticle size as regressor variable is **significant** at 5% significance level.
+
+Koyck DLM models for each of the 4 regressors are significant. 
+
+#### Koyck Model selection
+
+```{r}
+MASE(Koyck.Temp, Koyck.Chem1, Koyck.Chem2, Koyck.ParticleSize) %>% arrange(MASE)
+```
+
+As per MASE measure, Koyck DLM model with Chemical 1 as regressor is the best model for forecasting. 
+
+##### Diagnostic check for Polynomial DLM (Residual analysis)
+  
+```{r}
+checkresiduals(Koyck.Chem1$model$residuals)
+```
+
+##### Conclusion of Koyck DLM model
+
+- **Koyck.Chem1** with Chemical 1 as regressor is best Koyck DLM model.
+- model is significant.
+- **MASE is 0.8530742**
+- Adjusted R-squared is 59.58% 
+- violations in the test of assumptions
+- Serial autocorrelation is significant
+
+#### Fit Autoregressive Distributed Lag Model
+
+Autoregressive Distributed lag model is a flexible and parsimonious infinite DLM. The model is represented as, <br />
+
+$Y_t = \mu + \beta_0 X_t + \beta_1 X_{t-1} + \gamma_1 Y_{t-1} + e_t$ <br />
+
+Similar to the Koyck DLM, it is possible to write this model as an infinite DLM with infinite lag distribution of any shape rather than a polynomial or geometric shape. The model is denoted as ARDL(p,q). To fit the model we will use ardlDlm() function is used. Lets find the best lag length using AIC and BIC score through an iteration. Lets set max lag length to 12.
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 144 ARDL (since max lag for response and predictor of ARDL model is 12, i.e, p = q = 12 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:12){
+  for(j in 1:12){
+    model4.1 = ardlDlm(formula = mortality ~ temp + chem1 + chem2 + particle.size, data = mort, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),],1) # Best model as per AIC
+head(df[order( df[,4] ),],1) # Best model as per BIC
+```
+
+ARDL(5,12) and ARDL(1,12) are the best models as per AIC and BIC scores respectively. Now, lets fit these 2 models, <br />
+  
+  
+**1. ARDL(5,12) model (BEST FINITE DLM MODEL)** <br />
+
+```{r}
+ARDL.5x12 = ardlDlm(formula = mortality ~ temp + chem1 + chem2 + particle.size, data = mort, p = 5, q = 12)
+summary(ARDL.5x12)
+checkresiduals(ARDL.5x12$model)
+MASE(ARDL.5x12)
+```
+
+**Summary of ARDL(5x12) DLM model** <br />
+
+- model is significant 
+- **MASE is 0.6808706**
+- Adjusted R-squared improved to 72.22%
+- **No violations** in the test of assumptions
+- Serial autocorrelations are **insignificant**
+
+**2. ARDL(1,12) model** <br />
+
+```{r}
+ARDL.1x12 = ardlDlm(formula = mortality ~ temp + chem1 + chem2 + particle.size, data = mort, p = 1, q = 12)
+summary(ARDL.1x12)
+checkresiduals(ARDL.1x12$model)
+MASE(ARDL.1x12)
+```
+
+**Summary of ARDL(1x12) DLM model** <br />
+
+- **ARDL(1x12)** model is significant 
+- MASE is 0.7024931
+- Adjusted R-squared worsens to 71.14% 
+- **No violations** in the test of assumptions
+- Serial autocorrelations are significant
+
+##### ARDL Model selection
+
+- ARDL(5,12) has better fit as per MASE (0.6808706 of ARDL(5,12) vs 0.7024931 ARDL(1,12)).
+
+##### Conclusion of ARDL models
+
+ARDL(5,12) is the best of all ARDL models with better MASE and adjusted R-squared statistics. Also, ARDL(5,12) does not violate assumptions of normality, linearity and serial autocorrelation.
+
+#### Most appropriate DLM model based on MASE (DLM Model Selection)
+
+The 4 DLM models are, <br />
+
+- Finite DLM model: **DLM.model**
+- Polynomial DLM model: **PolyDLM.Chem1**
+- Koyck transformed geometric DLM model: **Koyck.Chem1**
+- Autoregressive DLM model: **ARDL(5,12)**
+
+**mean absolute scaled errors** or **MASE** of these models are, <br />
+
+```{r}
+MASE(DLM.model, PolyDLM.Chem1, Koyck.Chem1, ARDL.5x12) %>% arrange(MASE)
+```
+
+#### Conclusion of Distributed Lag models (DLM) modelling
+
+The Best DLM model for the Mortality response is based on the precipitation regressor which gives the most accurate forecasting based on the MASE measure is the Autoregressive DLM model, **ARDL.5x12** with MASE measure of 0.6808706. 
+
+### B. Dynamic linear models (dynlm package)
+
+Dynamic linear models are general class of time series regression models which can account for trends, seasonality, serial correlation between response and regressor variable, and **most importantly the affect of intervention points**.
+
+The response of a general Dynamic linear model is,  <br />
+
+$Y_t = \omega_2Y_{t-1} + (\omega_0 + \omega_1)P_t - \omega_2\omega_0P_{t-1} + N_t$ <br />
+
+where, <br />
+
+- $Y_t$ is the response 
+- $\omega_2$ is the coefficient of 1 time unit lagged response
+- $P_t$ is the current pulse affect at the intervention point with $(\omega_0 + \omega_1)$ coefficient representing the instantaneous effect of the intervention point 
+- $P_{t-1}$ is the past pulse affect with  $\omega_2\omega_0$ coefficient 
+- $N_t$ is the process represents the component where there is no intervention and is referred to as the natural or unperturbed process.
+
+Lets revisit the time series plot for the response, Mortality, to visualize possible intervention points <br />
+
+```{r}
+plot(Mortality)
+```
+
+As mentioned at the descriptive analysis stage, there is no clear intervention that we identify visually. But maybe **week 153** might be an intervention point just because of its magnitude. Assuming this intervention point lets fit a Dynamic Linear model and see if the pulse function at week 153 is significant or not.
+
+Now, lets fit Dynamic Linear model using dynlm() as shown below, (Note, the potential intervention point was identified at Week 153). 
+
+```{r}
+MortalityX = ts(mort[,1], start = c(2010,1), frequency = 52) # set frequency
+
+Y.t = MortalityX
+T = 153 # The time point when the intervention occurred 
+P.t = 1*(seq(MortalityX) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t) + season(Y.t)) # library(dynlm)
+
+Dyn.model1 = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + trend(Y.t) + season(Y.t)) # library(dynlm)
+
+Dyn.model2 = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + P.t.1 + trend(Y.t) + season(Y.t)) # library(dynlm)
+
+Dyn.model3 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + P.t + P.t.1 + trend(Y.t) + season(Y.t)) # library(dynlm)
+
+Dyn.model4 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t) + season(Y.t)) # library(dynlm)
+
+AIC(Dyn.model, Dyn.model1, Dyn.model2, Dyn.model3, Dyn.model4) %>% arrange(AIC)
+```
+
+Dyn.model is the best Dynamic Linear model with 3 lagged components of the response (Mortality), a **significant pulse component at T=153rd week**, and trend and seasonal components of Mortality series having frequency of 52 weeks as per the AIC score. Lets look at the summary statistics and check residuals
+
+```{r}
+summary(Dyn.model)
+checkresiduals(Dyn.model)
+```
+
+**Summary of Dynamic linear model, Dyn.model** <br />
+
+- model is **insignificant** as p-value = 0.06399 (> 0.05 significance level)
+
+#### Conclusion of Dynamic Linear model
+
+Most importantly, **the dynamic linear model is insignificant** although the **pulse (P.t) component significant** at 153rd week. Thus, **Dynamic Linear model is not suitable/necessary for our Mortality time series.**
+
+### C. Exponential Smoothing Method and State-Space models
+
+Exponential smoothing methods including the state-space models takes into consideration the Error component, Trend component and seasonality component of the time series. Each of these components can be absent (None), Additive (A) or Multiplicative (M). Hence, these models are represented as ETS(ZZZ) representing the Error, Trend and Seasonal component respectively.
+
+The best Exponential Smoothing model or State-Space model for our Mortality time series can be easily identified by triggering the auto-search by setting the argument model = "ZZZ" in the ets() as shown below. Also, we will check if damped trend and the possibility of drift give us better models.
+
+**Best Exponential Smoothing model -** <br />
+
+```{r}
+autofit.ETS = ets(Mortality, model="ZZZ")
+summary(autofit.ETS)
+checkresiduals(autofit.ETS)
+```
+
+System chooses the Simple exponential smoothing with Multiplicative errors ETS(MNN). MASE is 0.8628215.
+
+**Best Exponential Smoothing model with damping -** <br />
+
+```{r}
+autofit.ETS.damped = ets(Mortality, model="ZZZ", damped = TRUE)
+summary(autofit.ETS.damped)
+checkresiduals(autofit.ETS.damped)
+```
+System chooses the Holt's damped model with Multiplicative errors ETS(MAdN). MASE is 0.8615958.
+
+**Best Exponential Smoothing model with drift -** <br />
+
+```{r}
+autofit.ETS.drift = ets(Mortality, model="ZZZ", beta = 1E-4)
+summary(autofit.ETS.drift)
+checkresiduals(autofit.ETS.drift)
+```
+
+Again system chooses the ETS(MNN) model.
+
+Thus, the best Exponential smoothing or State-state model for our Mortality series is the best Holt's damped model with Multiplicative errors ETS(M,Ad,N) with MASE score of 0.8615958.
+
+#### Conclusion of Exponential Smoothing Method and State-Space models
+
+The best State-space model which gives the most accurate forecasting based on the MASE measure is **ETS(M,Ad,N)** having lowest MASE measure of 0.8615958 of all possible State space models.
+
+### Overall Most Appropriate Regression model (Model Selection)
+
+Based on the 4 Time series regression methods considered, the best model as per MASE measure for each method is summarized below, <br />
+
+- A. Best Distributed lag models is - Autoregressive Distributed Lag model ***ARDL(5,12)*** with MASE measure of ***0.6808706***, AIC of 3444.216, BIC of 3604.066 and Adjusted R-squared of 72.22%.
+
+- B. Best Dynamic linear models is - None (No intervention points were present)
+
+- C. Best Exponential smoothing and State-Space model is - **Holt's damped model with Multiplicative errors ETS(M,Ad,N)** with MASE measure of **0.8615958.**, AIC of 5391.739 and BIC of 5417.122
+
+Clearly, the best model is Autoregressive Distributed Lag model ARDL(5,12) as per AIC, BIC and MASE measures.
+
+### Best Time Series regression model for Forecasting
+
+Best Time Series regression model is - **Autoregressive Distributed Lag model ARDL(5,12)** with MASE measure of **0.6808706**.
+
+## Detailed Graphical and statistical tests of assumptions for $ARDL(5,12)$ model (Residual Analysis)
+
+Residual analysis to test model assumptions. <br />
+
+Lets perform a detailed ***Residual Analysis*** to check if any model assumptions have been violated. 
+
+The estimator error (or residual) is defined by: <br />
+
+$\hat{\epsilon_i}$ = $Y_i$ - $\hat{Y_i}$ (i.e. observed value less -
+trend value)
+
+The following problems are to be checked,
+
+  1. linearity in distribution of error terms
+  2. The mean value of residuals is zero 
+  3. Serial autocorrelation
+  4. Normality of distribution of error terms
+
+Lets first apply diagnostic check using checkresiduals() function, 
+
+``` {r}
+checkresiduals(ARDL.5x12)
+```
+
+1. From the Residuals plot, linearity is not violated as the residuals are randomly distributed across the mean. Thus, **linearity in distribution of error terms is not violated**
+
+2. To test mean value of residuals is zero or not, lets calculate mean value of residuals as,
+
+```{r}
+mean(ARDL.5x12$model$residuals)
+```
+
+As mean value of residuals is close to 0, **zero mean residuals is not violated**.
+
+3. In the checkresiduals output, the Ljung-Box test output is displayed. According to this test, the hypothesis are,
+
+Which has, <br />
+$H_0$ : series of residuals exhibit no serial autocorrelation of any order up to p <br />
+$H_a$ : series of residuals exhibit serial autocorrelation of any order up to p <br />
+
+From the Ljung-Box test output, since p (0.9965) > 0.05, we do not reject the null hypothesis of no serial autocorrelation. 
+
+Thus, according to this test and ACF plot, we can conclude that the **serial correlation left in residuals is insignificant**.
+
+4. From the histogram shown by checkresiduals(), residuals seem to follow normality. Lets test this statistically,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(ARDL.5x12$model$residuals)
+```
+
+From the Shapiro-Wilk test, since p<0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, residuals of ARDL.5x12 are **Not normally** distributed.
+
+**Summarizing residual analysis on $full$ model:**
+
+Assumption 1: The error terms are randomly distributed and thus show linearity: ***Not violated*** <br /> 
+Assumption 2: The mean value of E is zero (zero mean residuals): ***Not violated*** <br /> 
+Assumption 4: The error terms are independently distributed, i.e. they are not autocorrelated: ***Not violated*** <br /> 
+Assumption 5: The errors are normally distributed. **Violated** <br /> 
+
+Although normality of residuals assumption is violated, 'There is no normality assumption in fitting an exponential smoothing model' (Rob Hyndman 2013). Having no residual assumptions' violations, the Holt's damped model with Multiplicative errors ETS(M,Ad,N) model is good for accurate forecasting of Mortality. Lets forecast for the next 4 weeks ahead Mortality,
+
+
+## Forecasting
+
+Using MASE measure, Autoregressive Distributed Lag model ARDL(5,12) is best fitted model to forecast Mortality. Lets estimate and plot 4 weeks (509-512 weeks) ahead forecasts for Mortality series. 
+
+Observed and fitted values are plotted below. This plot indicates a good agreement between the model and the original series.
+
+```{r}
+plot(Mortality,ylab='Mortality', xlab = 'week', type="l", col="black", main="Observed and fitted values using ARDL(5,12) model on Mortality")
+lines(ARDL.5x12$model$fitted.values, col="red")
+legend("topleft",lty=1, text.width = 12,
+       col=c("black", "red"), 
+       c("Mortality series", "ARDL(5,12) fit"))
+```
+
+Since the future covariates aren't given, lets estimate the best Exponential smoothing/State-Space model for each of the 4 covariates first. A custom function GoFVals() will be used.
+
+```{r}
+GoFVals = function(data, H, models){
+  M = length(models) # The number of competing models
+  N = length(data) # The number of considered time series
+  fit.models = list()
+  series = array(NA, N*M)
+  FittedModels = array(NA, N*M)
+  AIC = array(NA, N*M)
+  AICc = array(NA, N*M)
+  BIC = array(NA, N*M)
+  HQIC = array(NA, N*M)
+  MASE = array(NA, N*M)
+  mean.MASE = array(NA, N)
+  median.MASE = array(NA, N)
+  GoF = data.frame(series, FittedModels, AIC, AICc, BIC, HQIC, MASE)
+  count = 0
+  for ( j in 1:N){
+    sum.MASE = 0
+    sample.median = array(NA, M)
+    for ( i in 1: M){
+      count = count + 1
+      fit.models[[count]] = ets(data[[j]], model = models[i])
+      GoF$AIC[count] = fit.models[[count]]$aic
+      GoF$AICc[count] = fit.models[[count]]$aicc
+      GoF$BIC[count] = fit.models[[count]]$bic
+      q = length(fit.models[[count]]$par)
+      GoF$HQIC[count] = -2*fit.models[[count]]$loglik+ 2*q*log(log(length(data[[j]])))
+      GoF$MASE[count] = accuracy(fit.models[[count]])[6]
+      sum.MASE = sum.MASE + GoF$MASE[count]
+      sample.median[i] = GoF$MASE[count]
+      GoF$series[count] = j
+      GoF$FittedModels[count] = models[i]
+    }
+    mean.MASE[j] = sum.MASE / N
+    median.MASE[j] = median(sample.median)
+  }
+  return(list(GoF = GoF, mean.MASE = mean.MASE, median.MASE = median.MASE))
+}
+```
+
+The 4 regressors auto fit to either "MAdN", "AAdN", "ANN" or "MAN". (This part of analysis has been hidden for simplicity purpose). Hence we will focus on these 4 ETS models for the 4 regressors, Temperature, Chemical 1 and 2, and particle size. The fitting model for each of these 4 regressors using the GoFVals() function is shown below.  
+
+```{r}
+# Series to be modelled
+data = list()
+data[[1]] = Temp
+data[[2]] = Chem1
+data[[3]] = Chem2
+data[[4]] = ParticleSize
+
+# Specify the forecast horizon
+H = 4
+
+# Specify the models we will focus on
+models = c("MAN", "AAN", "ANN")
+
+GoFVals(data = data, H = H, models = models)
+```
+
+Based on MASE, the best ETS models for each regressor are,
+
+- For Temperature - MAN
+- For Chemical 1 - AAN
+- For Chemical 2 - AAN
+- For Particle Size - AAN
+
+Lets fit these models and get the future covariates,
+
+```{r}
+fit.MAN.Temp = ets(Temp, model="MAN")
+forecast.MAN.Temp = forecast::forecast(fit.MAN.Temp, h = 4)
+
+fit.MAN.Chem1 = ets(Chem1, model="AAN")
+forecast.MAN.Chem1 = forecast::forecast(fit.MAN.Chem1, h = 4)
+
+fit.MAN.Chem2 = ets(Chem2, model="AAN")
+forecast.MAN.Chem2 = forecast::forecast(fit.MAN.Chem2, h = 4)
+
+fit.MAN.ParticleSize = ets(ParticleSize, model="AAN")
+forecast.MAN.ParticleSize = forecast::forecast(fit.MAN.ParticleSize, h = 4)
+```
+
+Using the Point Forecasts of these covariates, we can now forecast our Mortality response.
+
+```{r}
+x.new =  t(matrix(c(forecast.MAN.Temp$mean, forecast.MAN.Chem1$mean, forecast.MAN.Chem2$mean, forecast.MAN.ParticleSize$mean), ncol = 4, 
+                nrow = 4))
+forecasts.ardldlm = dLagM::forecast(model = ARDL.5x12,  x = x.new, h = 4)$forecasts
+```
+
+
+**Forecast using overall BEST fitting model:** <br />
+
+The point forecasts and the forecast plot using the overall best fitting model, ARDL(5,12) is given below,
+
+```{r}
+df <- data.frame(
+  ARDL_forecasts = c(forecasts.ardldlm)
+) 
+row.names(df) <- c("week 509", "week 510", "week 511", "week 512")
+df
+
+Mortality.extended4 = c(Mortality , forecasts.ardldlm)
+
+{
+plot(ts(Mortality.extended4),type="l", col = "red", xlim= c(400, 515),
+ylab = "Mortality", xlab = "Weeks", 
+main="4 weeks ahead forecast for Mortality series
+      using ARDL(5,12) model")          
+lines(Mortality,col="black",type="l")
+legend("topleft",lty=1,
+       col=c("black", "red"), 
+       c("Mortality series", "ARDL(5,12) forecasts"))
+}
+
+```
+
+The forecasts for best Finite DLM, Polynomial DLM, Koyck, and Exponential smoothing/State-space model are plotted and given below (Note, Dynamic Linear model was found insignificant), 
+
+**For Distributed Lag models:** <br />
+
+The 4 weeks ahead Point forecasts for the 4 DLM models are printed and plotted below, 
+
+```{r}
+# Forecasts using Finite DLM 
+forecasts.dlm = dLagM::forecast(model = DLM.model, x = x.new, h = 4)$forecasts
+
+# Forecasts using Polynomial DLM 
+x.new2 =  c(forecast.MAN.Chem1$mean)
+forecasts.polydlm = dLagM::forecast(model = PolyDLM.Chem1 , x = x.new2, h = 4)$forecasts
+
+# Forecasts using Koyck DLM
+x.new3 =  c(forecast.MAN.Chem1$mean)
+forecasts.koyckdlm = dLagM::forecast(model = Koyck.Chem1 , x = x.new3, h = 4)$forecasts
+
+# Forecasts using ARDL 
+forecasts.ardldlm = dLagM::forecast(model = ARDL.5x12,  x = x.new, h = 4)$forecasts
+
+df <- data.frame(
+  Finite_DLM_forecasts = c(forecasts.dlm),
+  Polynomial_DLM_forecasts = c(forecasts.polydlm),
+  Koyck_DLM_forecasts = c(forecasts.koyckdlm),
+  ARDL_forecasts = c(forecasts.ardldlm)
+) 
+row.names(df) <- c("week 509", "week 510", "week 511", "week 512")
+df
+
+Mortality.extended1 = c(Mortality , forecasts.dlm)
+Mortality.extended2 = c(Mortality , forecasts.polydlm)
+Mortality.extended3 = c(Mortality , forecasts.koyckdlm)
+Mortality.extended4 = c(Mortality , forecasts.ardldlm)
+
+
+{
+plot(ts(Mortality.extended4),type="l", col = "Red", xlim= c(400, 515),
+ylab = "Mortality", xlab = "Weeks", 
+main="4 weeks ahead forecast for Mortality series
+      using DLM models")          
+lines(ts(Mortality.extended1),col="blue",type="l")
+lines(ts(Mortality.extended2),col="green",type="l")
+lines(ts(Mortality.extended3),col="orange",type="l")
+lines(Mortality,col="black",type="l")
+legend("topleft",lty=1,
+       col=c("black", "red", "blue", "green", "orange"), 
+       c("Mortality series", "ARDL(5,12) forecasts", "Finite DLM forecasts", "Polynomial DLM forecasts", "Koyck DLM forecasts"))
+}
+
+```
+**For Exponential smoothing/State-space model:** <br />
+
+The 4 weeks ahead point forecasts and Confidence intervals are printed and plotted below, 
+
+```{r}
+forecasts.Dynlm = forecast::forecast(autofit.ETS.damped, h =4)
+forecasts.Dynlm
+plot(forecasts.Dynlm, ylab="Mortality", type="l", fcol="red", xlab="weeks", xlim= c(400, 515),
+main="4 weeks ahead forecasts using Dynamic Linear model")
+legend("topleft",lty=1, pch=1, col=1:2, c("Mortality series","Dynlm forecasts"))
+```
+
+## Conclusion
+
+The most fitting model for our Mortality series in terms of MASE which assesses the forecast accuracy is the Autoregressive Distributed Lag model $ARDL(5,12)$ with all 4 regressors, Temperature, Chemical 1 and 2, and particle size. The point forecasts for 4 weeks ahead reported using the forecast() of dLagM package are 171.0425, 171.7601, 171.2978, and 171.4611 respectively (Confidence Intervals are not outputted).
+
+## Future Directions
+
+Potentially better forecasting methods can be explored, compared and diagnosed for better fit.
+
+## Reference List
+
+Rob Hyndman (2013) *Does the Holt-Winters algorithm for exponential smoothing in time series modelling require the normality assumption in residuals?*, Stack Exchange Website, accessed 26 September 2023. https://stats.stackexchange.com/questions/64911/does-the-holt-winters-algorithm-for-exponential-smoothing-in-time-series-modelli#:~:text=There%20is%20no%20normality%20assumption,under%20almost%20all%20residual%20distributions.
+
+
+
+# Task 2: Univariate Forecasting of First Flowering Day: Four-Year Ahead Predictions
+
+## Data Description
+
+The dataset holds 6 columns and 31 observations. They are, Year column, the day of occurrence of a species first flowering (first flowering day, FFD, a number between 1-365), climate factors namely, rainfall (rain), temperature (temp), radiation level (rad), and relative humidity (RH) - all focused on one species of plants and measured from 1984 to 2014.
+
+## Objective
+
+Our aim for the FFD dataset is to give best 4 years ahead forecasts by determining the most accurate and suitable regression model that determines the yearly First flowering day in terms of MASE using single predictor (univariate analysis). A descriptive analysis will be conducted initially. Model-building strategy will be applied to find the best fitting model from the time series regression methods (dLagM package), dynamic linear models (dynlm package), and exponential smoothing and corresponding state-space models.
+
+## Model Selection Criteria
+
+MASE, Information Criteria (AIC and BIC), and Adjusted R Squared.
+
+## Read Data
+
+```{r}
+FFD_dataset <- read.csv("C:/Users/admin/Downloads/FFD.csv")
+head(FFD_dataset)
+```
+
+
+## Identification of the response and the regressor variables
+
+For fitting a regression model, the response is **FFD** and the 4 regressor variables are the **Temperature**, **Rainfall**, **Radiation Level** and **Relative Humidity**.
+
+- y = FFD = First flowering day, a number between 1 -365
+- x1 = Temperature 
+- x2 = Rainfall 
+- x3 = Radiation 
+- x4 = RelHumidity = Relative Humidity
+
+All the 5 variables are continuous variables.
+
+### Read Regressor and Response variables
+
+Lets first get the regressor and response as TS objects,
+
+```{r}
+FFD = ts(FFD_dataset[,6], start = c(1984))
+Temperature = ts(FFD_dataset[,2], start = c(1984))
+Rainfall = ts(FFD_dataset[,3], start = c(1984))
+Radiation = ts(FFD_dataset[,4], start = c(1984))
+RelHumidity = ts(FFD_dataset[,5], start = c(1984))
+data.ts = ts(FFD_dataset, start = c(1984)) # Y and x in single dataframe
+```
+
+
+### Relationship between Regressor and Response variables
+
+Lets scale, center and plot all the 5 variables together
+
+plot(FFD)
+
+```{r}
+data.scale = scale(data.ts)
+plot(data.scale[,2:6], plot.type="s", col=c("red", "blue", "green", "yellow", "black"), main = "FFD (Black - Respone), Temperature (Red - X1),\n  Rainfall (Blue - X2), Radiation (Green - X3), RelHumidity (Yellow - X4)")
+```
+
+It is hard to read the correlations between the regressors and the response and the among the response themselves. But it is fair to say the 5 variables show some correlations. Lets check for correlation statistically using ggpairs(),
+
+```{r}
+ggpairs(data = FFD_dataset, columns = c(6,2,3,4,5), progress = FALSE) #library(GGally)
+```
+
+Hence, some correlations between the 4 regressors and response is present. We can generate regression model based on these correlations. First, lets look at the descriptive statistics
+
+## Descriptive Analysis
+
+Since we are generating regression model which estimates the response, **$FFD$**, lets focus on FFDs statistics.
+
+### Summary statistics
+
+```{r}
+summary(FFD)
+```
+The mean and median of the FFD are very close indicating symmetrical distribution.
+
+### Time Series plot:
+
+The time series plot for our data is generated using the following code chunk,
+
+```{r}
+plot(FFD, ylab='Yearly average of First Flowering Day (FFD)',xlab='Year',
+     type='o', main="Figure 1: Yearly Average FFD Trend (1984-2014)")
+```
+
+**Plot Inference :** <br />
+
+From Figure 1, we can comment on the time series’s,
+
+- **Trend:** The overall shape of the trend seems to follow an downward trend. Thus, indicating **non-stationarity**.
+
+- **Seasonality:** From the plot, no seasonal behavior is seen.
+
+- **Change in Variance:** We see high variation in FFD series during the years 1997-2004 and low variation during other years.
+
+- **Behavior:** We notice mixed behavior of MA and AR series. AR behavior is seen as we obverse following data points. MA behavior is evident due to up and down fluctuations in the data points.
+
+- **Intervention/Change points:** No clear intervention point seen. Year 2002-2003 might be an intervention points and we will be checked if they cause significant change in mean value. 
+
+
+### ACF and PACF plots:
+
+```{r}
+acf(FFD, main="ACF of FFD")
+pacf(FFD, main ="PACF of FFD")
+```
+
+- **ACF plot:** We notice **no significant autocorrelations.** No slowly decaying pattern indicates **stationary** series. We do not see any ‘wavish’ form. Thus, **no significant seasonal behavior** is observed.
+
+- **PACF plot:** The 1st vertical spike is insignificant indicating **stationary** series.
+
+### Check normality
+
+Many model estimating procedures assume normality of the residuals. If this assumption doesn’t hold, then the coefficient estimates are not optimum. Lets look at the Quantile-Quantile (QQ) plot to to observe normality visually and the Shapiro-Wilk test to statistically confirm the result.
+
+```{r}
+qqnorm(FFD, main = "Normal Q-Q Plot of Average yearly FFD")
+qqline(FFD, col = 2)
+```
+
+We see deviations from normality. Clearly, upper tail is off and most of the data in middle is off the line as well. Lets check statistically using shapiro-wilk test. Lets state the hypothesis of this test,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(FFD)
+```
+
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, FFD series is **not normally** distributed.
+
+### Test Stationarity
+
+The ACF and PACF of FFD time series at the descriptive analysis stage of time series tells us stationarity in our time series. Lets use ADF and PP tests,
+
+**Using ADF (Augmented Dickey-Fuller) test :** <br />
+  
+Lets confirm the non-stationarity using Dickey-Fuller Test or ADF test. Lets state the hypothesis, <br />
+
+$H_0$ : Time series is Difference non-stationary <br />
+$H_a$ : Time series is Stationary
+
+```{r warning = FALSE}
+adf.test(FFD) #library(tseries)
+```
+
+since p-value > 0.05, we do not reject null hypothesis of non stationarity. we can conclude that the **series is non-stationary** at 5% level of significance.
+
+**Using PP (Phillips-Perron) test :** <br />
+  
+The null and alternate hypothesis are same as ADF test.
+
+```{r}
+PP.test(FFD, lshort = TRUE)
+PP.test(FFD, lshort = FALSE)
+```
+
+According to the PP tests, FFD series is **stationary** at 5% level
+
+The two procedures give differing outcomes. Since Philips-Perron (PP) test is non-parametric, i.e. it does not require to select the level of serial correlation as in ADF and since our FFD series does not have significant serial autocorrelations, we can go with the outcome of PP test stating the **FFD series is stationary**.
+
+
+### Conclusion from descriptive analysis:
+
+- From the ACF/PACF plots and PP tests, we found our FFD response **is stationary**. **Differencing is not required**.
+- Trend is **not normal**. Thus **Box-cox transformation is required**.
+
+Lets perform with Box-Cox transformation,
+
+
+## Transformations
+
+### Box-Cox transformation to improve normality 
+
+To improve normality in our FFD time series, lets test Box-Cox transformations on the series
+
+```{r}
+lambda = BoxCox.lambda(FFD, method = "loglik") # library(forecast)
+BC.FFD = BoxCox(FFD, lambda = lambda)
+```
+
+### Check Normality of BC transformed FFD series
+
+Visually comparing the time series plots before and after box-cox transformation,
+
+```{r}
+par(mfrow=c(2,1))
+plot(BC.FFD,ylab='Yearly FFD',xlab='Time',
+     type='o', main="Box-Cox Transformed FFD Time Series")
+points(y=BC.FFD,x=time(BC.FFD))
+plot(FFD,ylab='Yearly FFD',xlab='Time',
+     type='o', main="Original FFD Time Series")
+points(y=FFD,x=time(FFD))
+par(mfrow=c(1,1))
+```
+
+From the plot, almost no improvement in the variance of the time series is visible after BC transformation. Lets check for normality using shapiro test,
+
+```{r}
+shapiro.test(BC.FFD)
+```
+
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, **BC Transformed FFD is not normal**.
+
+### Conclusion after BC transformation
+
+The BC transformed FFD series is Stationary and not normal. **BC transformation was not effective**. 
+
+
+## Decomposition
+
+At the descriptive analysis stage, from the time series plot and the ACF/PACF plots, no seasonal pattern was observed but a downward trend was observed. Lets decompose the FFD series and confirm. STL decomposition method will be used.
+
+### STL decomposition
+
+Lets set t.window to 15 and look the STL decomposed plots,
+
+We can adjust the series for seasonality by subtracting the seasonal component from the original series using the following code chunk,
+
+Note - Since we cannot do decomposition on a series having frequency as 1, lets falsely use frequency as 2. Also note, the time truncates from 2014 to 2000 as the frequency is doubled. This is okay since we are just interested in the decomposition.
+
+```{r}
+# Code gist - Apply STL decomposition to get seasonally adjusted and trend adjusted and visually compare w.r.t to original time series
+
+FFDX = ts(FFD_dataset[,6], start = c(1984),frequency = 2) # set frequency
+stl.FFD <- stl(window(FFDX, start=c(1984)), t.window=15, s.window="periodic", robust=TRUE)
+
+par(mfrow=c(3,1))
+
+plot(FFDX,ylab='FFD',xlab='Time',
+     type='o', main="Original FFD Time Series")
+
+plot(seasadj(stl.FFD), ylab='FFD',xlab='Time', main = "Seasonally adjusted FFD")
+
+stl.FFD.trend = stl.FFD$time.series[,"trend"] # Extract the trend component from the output
+stl.FFD.trend.adjusted = FFDX - stl.FFD.trend
+
+plot(stl.FFD.trend.adjusted, ylab='FFD',xlab='Time', main = "Trend adjusted FFD")
+
+par(mfrow=c(1,1))
+```
+On very close inspection of the plots above, the trend adjusted series looks more different (than the seasonally adjusted series) from the Original FFD series. Meaning, trend component is more significant than the seasonal component in the FFD series.
+
+### Conclusion of Decomposition
+
+Trend component is more significant than the seasonal component in the FFD series. Thus, we expect the fitted model to have no seasonal component.
+
+
+## Modeling
+
+Time series regression methods namely, <br />
+  
+- A. Distributed lag models (dLagM package), 
+- B. Dynamic linear models (dynlm package)
+- C. Exponential smoothing and corresponding state-space models will be considered.
+
+### A. Distributed lag models 
+
+Based on whether the lags are known (Finite DLM) or undetermined (Infinite DLM), 4 major modelling methods will be tested, namely,
+
+- Basic Finite Distributed lag model,
+- Polynomial DLM,
+- Koyck transformed geometric DLM,
+- and Autoregressive DLM.
+
+#### Fit Finite DLM 
+
+The response of a finite DLM model with 1 regressor is represented as shown below, <br />
+  
+$Y_t = \alpha + \sum_{s=0}^{q} \beta_s X_{t-s} + \epsilon_t$ <br />
+
+where, <br />
+
+- $\alpha$ is intercept
+- $\beta_s$ is coefficient of s lagged response $X_t$ 
+- and $\epsilon_t$ is the error term
+
+In our dataset, we have 4 regressors. For uni variate analysis lets fit models with single regressor for each of the 4 regressors.
+
+**Note** - We are using FFD and not the BC.FFD (BC transformed FFD series) as normality is violated in both of these.
+
+##### 1. Temperature as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = FFD ~ Temperature, data = FFD_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.Temperature = dlm(formula = FFD ~ Temperature, data = FFD_dataset, q = 14)
+summary(DLM.Temperature)
+```
+DLM.Temperature Model is **insignificant** (p-value = 0.207) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.Temperature.noIntercept = dlm(formula = FFD ~ 0 + Temperature, data = FFD_dataset, q = 14)
+summary(DLM.Temperature.noIntercept)
+```
+DLM.Temperature.noIntercept Model is **significant**.
+
+##### 2. Rainfall as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = FFD ~ Rainfall, data = FFD_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.Rainfall = dlm(formula = FFD ~ Rainfall, data = FFD_dataset, q = 14)
+summary(DLM.Rainfall)
+```
+DLM.Rainfall Model is **insignificant** (p-value = 0.1631) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.Rainfall.noIntercept = dlm(formula = FFD ~ 0 + Rainfall, data = FFD_dataset, q = 14)
+summary(DLM.Rainfall.noIntercept)
+```
+DLM.Rainfall.noIntercept Model is **significant**.
+
+##### 3. Radiation as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = FFD ~ Radiation, data = FFD_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.Radiation = dlm(formula = FFD ~ Radiation, data = FFD_dataset, q = 14)
+summary(DLM.Radiation)
+```
+DLM.Radiation Model is **insignificant** (p-value = 0.1182) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.Radiation.noIntercept = dlm(formula = FFD ~ 0 + Rainfall, data = FFD_dataset, q = 14)
+summary(DLM.Radiation.noIntercept)
+```
+
+DLM.Radiation.noIntercept Model is **significant**.
+
+##### 4. RelHumidity as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = FFD ~ RelHumidity, data = FFD_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.RelHumidity = dlm(formula = FFD ~ RelHumidity, data = FFD_dataset, q = 14)
+summary(DLM.RelHumidity)
+```
+DLM.RelHumidity Model is **significant** (p-value = 0.02795) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.RelHumidity.noIntercept = dlm(formula = FFD ~ 0 + RelHumidity, data = FFD_dataset, q = 14)
+summary(DLM.RelHumidity.noIntercept)
+```
+
+DLM.RelHumidity.noIntercept Model is **significant**.
+
+##### Finite DLM Model Selection
+
+Models using all 4 predictors without intercept are significant. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("DLM.Temperature.noIntercept", "DLM.Rainfall.noIntercept", "DLM.Radiation.noIntercept", "DLM.RelHumidity", "DLM.RelHumidity.noIntercept")
+AIC <- c(AIC(DLM.Temperature.noIntercept), AIC(DLM.Rainfall.noIntercept), AIC(DLM.Radiation.noIntercept), AIC(DLM.RelHumidity), AIC(DLM.RelHumidity.noIntercept))
+BIC <- c(BIC(DLM.Temperature.noIntercept), BIC(DLM.Rainfall.noIntercept), BIC(DLM.Radiation.noIntercept), BIC(DLM.RelHumidity), BIC(DLM.RelHumidity.noIntercept))
+Adjusted_Rsquared <- c(0.999, 0.9884, 0.9884, 0.9986, 0.9979)
+MASE <- MASE(DLM.Temperature.noIntercept, DLM.Rainfall.noIntercept, DLM.Radiation.noIntercept, DLM.RelHumidity, DLM.RelHumidity.noIntercept)
+```
+
+```{r}
+data.frame(AIC, BIC, Adjusted_Rsquared, MASE) %>% arrange(AIC)
+```
+
+Thus, as per AIC, BIC and MASE, finite distributed lag model for FFD with Relative Humidity as the regressor (DLM.RelHumidity) is the best.
+
+
+##### Diagnostic check for DLM.RelHumidity (Residual analysis)
+
+We can apply a diagnostic check using checkresiduals() function from the forecast package.
+
+```{r}
+checkresiduals(DLM.RelHumidity$model$residuals) # forecast package
+```
+
+In this output, <br />
+  
+- from the time series plot and histogram of residuals, there is an obvious random pattern and normality in the residual distribution. Thus, no violation in general assumptions.
+- the Ljung-Box test output is displayed. According to this test, the null hypothesis that a series of residuals exhibits no autocorrelation up-to lag 10 is violated. According to this test and ACF plot, we can conclude that the **serial correlation left in residuals is NOT significant.**
+
+
+##### Conclusion of Finite DLM model
+
+- Best model is with Relative Humidity as the regressor (DLM.RelHumidity).
+- DLM.RelHumidity Model is significant.
+- **MASE is 0.01053278**
+- Adjusted R-squared is 99.86%.
+- No violations in the test of assumptions
+- Serial autocorrelation is not significant
+
+**ATTENTION** - Lets summarise the models from here on and not go into each models details for simplicity <br />
+
+
+#### Fit Polynomial DLM model
+
+Polynomial DLM model helps remove the effect of multicollinearity. Lets fit a polynomial DLM of order 2 for each of the 4 regressors individually.
+
+##### 1. Temperature as regressor
+
+```{r}
+PolyDLM.Temperature = polyDlm(x = as.vector(Temperature), y = as.vector(FFD), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.Temperature)
+```
+
+Polynomial DLM model with Temperature as regressor variable is **significant** at 5% significance level.
+
+##### 2. Rainfall as regressor
+
+```{r}
+PolyDLM.Rainfall = polyDlm(x = as.vector(Rainfall), y = as.vector(FFD), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.Rainfall)
+```
+
+Polynomial DLM model with Rainfall as regressor variable is **insignificant** at 5% significance level.
+
+##### 3. Radiation as regressor
+
+```{r}
+PolyDLM.Radiation = polyDlm(x = as.vector(Radiation), y = as.vector(FFD), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.Radiation)
+```
+
+Polynomial DLM model with Radiation as regressor variable is **insignificant** at 5% significance level.
+
+##### 4. Relative Humidity as regressor
+  
+```{r}
+PolyDLM.RelHumidity = polyDlm(x = as.vector(RelHumidity), y = as.vector(FFD), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.RelHumidity)
+```
+
+Polynomial DLM model with Relative Humidity as regressor variable is **insignificant** at 5% significance level.
+
+##### PolyDLM Model selection
+
+Polynomial DLM model for only Temperature regressor is significant. 
+
+```{r}
+MASE(PolyDLM.Temperature, PolyDLM.Rainfall, PolyDLM.Radiation, PolyDLM.RelHumidity)
+```
+
+Also as per MASE, Polynomial DLM model with Temperature as regressor is the best.
+
+##### Diagnostic check for Polynomial DLM (Residual analysis)
+
+```{r}
+checkresiduals(PolyDLM.Temperature$model$residuals)
+```
+
+Serial autocorrelations left in residuals are insignificant as per Ljung-Box test and ACF plot. From the time series plot and histogram of residuals, there is an obvious random pattern and normality in the residual distribution. Thus, no violation in general assumptions.
+
+##### Conclusion of Polynomial DLM model
+
+- Model Temperature as regressor is best of all 4 regressors.
+- model is significant 
+- **MASE is 0.7388406**
+- Adjusted R-squared is 42.89% 
+- No violations in the test of assumptions
+- Serial autocorrelation is insignificant
+- The 0th, 1st and 2nd order regressors of Temperature variable are significant.
+
+#### Fit Koyck geometric DLM model
+
+Here the lag weights are positive and decline geometrically. This model is called infinite geometric DLM, meaning there are infinite lag weights. Koyck transformation is applied to implement this infinite geometric DLM model by subtracting the first lag of geometric DLM multiplied by $\phi$. The Koyck transformed model is represented as, <br />
+  
+$Y_t = \delta_1 + \delta_2Y_{t-1} + \nu_t$ <br />
+
+where $\delta_1 = \alpha(1-\phi), \delta_2 = \phi, \delta_3 = \beta$ and the random error after the transformation is $\nu_t = (\epsilon_t -\phi\epsilon_{t-1})$. <br />
+
+The koyckDlm() function is used to implement a two-staged least squares method to first estimate the $\hat{Y}_{t-1}$ and the estimate $Y_{t}$ through simple linear regression. Lets deduce Koyck geometric GLM models for each of the 4 regressors individually.
+
+
+##### 1. Temperature as regressor
+
+**With intercept :** <br />
+
+```{r}
+Koyck.Temperature = koyckDlm(x = as.vector(FFD_dataset$Temperature) , y = as.vector(FFD_dataset$FFD) )
+summary(Koyck.Temperature$model, diagnostics = TRUE)
+```
+
+Koyck.Temperature is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.Temperature.NoIntercept = koyckDlm(x = as.vector(FFD_dataset$Temperature) , y = as.vector(FFD_dataset$FFD), intercept = FALSE)
+summary(Koyck.Temperature.NoIntercept$model, diagnostics = TRUE)
+```
+Koyck.Temperature.NoIntercept is **significant** at 5% significance level.
+
+##### 2. Rainfall as regressor
+
+**With intercept :** <br />
+
+```{r}
+Koyck.Rainfall = koyckDlm(x = as.vector(FFD_dataset$Rainfall) , y = as.vector(FFD_dataset$FFD) )
+summary(Koyck.Rainfall$model, diagnostics = TRUE)
+```
+
+Koyck.Rainfall model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.Rainfall.NoIntercept = koyckDlm(x = as.vector(FFD_dataset$Rainfall) , y = as.vector(FFD_dataset$FFD), intercept = FALSE)
+summary(Koyck.Rainfall.NoIntercept$model, diagnostics = TRUE)
+```
+
+Koyck.Rainfall.NoIntercept model is **significant** at 5% significance level.
+
+##### 3. Radiation as regressor
+
+**With intercept :** <br />
+
+```{r}
+Koyck.Radiation = koyckDlm(x = as.vector(FFD_dataset$Radiation) , y = as.vector(FFD_dataset$FFD) )
+summary(Koyck.Radiation$model, diagnostics = TRUE)
+```
+
+Koyck.Radiation model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.Radiation.NoIntercept = koyckDlm(x = as.vector(FFD_dataset$Radiation) , y = as.vector(FFD_dataset$FFD), intercept = FALSE)
+summary(Koyck.Radiation.NoIntercept$model, diagnostics = TRUE)
+```
+
+Koyck.Radiation.NoIntercept model is **significant** at 5% significance level.
+
+##### 4. Relative Humidity as regressor
+  
+**With intercept :** <br />
+
+```{r}
+Koyck.RelHumidity = koyckDlm(x = as.vector(FFD_dataset$RelHumidity) , y = as.vector(FFD_dataset$FFD) )
+summary(Koyck.RelHumidity$model, diagnostics = TRUE)
+```
+
+Koyck.RelHumidity model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.RelHumidity.NoIntercept = koyckDlm(x = as.vector(FFD_dataset$RelHumidity) , y = as.vector(FFD_dataset$FFD), intercept = FALSE)
+summary(Koyck.RelHumidity.NoIntercept$model, diagnostics = TRUE)
+```
+
+Koyck.RelHumidity.NoIntercept model is **significant** at 5% significance level.
+
+
+##### Koyck Model selection
+
+Koyck DLM models for all 4 regressors without intercept are significant. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("Koyck.Temperature.NoIntercept", "Koyck.Rainfall.NoIntercept", "Koyck.Radiation.NoIntercept", "Koyck.RelHumidity.NoIntercept")
+AIC <- c(AIC(Koyck.Temperature.NoIntercept), AIC(Koyck.Rainfall.NoIntercept), AIC(Koyck.Radiation.NoIntercept), AIC(Koyck.RelHumidity.NoIntercept))
+BIC <- c( BIC(Koyck.Temperature.NoIntercept), BIC(Koyck.Rainfall.NoIntercept), BIC(Koyck.Radiation.NoIntercept), BIC(Koyck.RelHumidity.NoIntercept))
+Adjusted_Rsquared <- c(0.9927, 0.9668, 0.993, 0.9931)
+MASE <- MASE(Koyck.Temperature.NoIntercept, Koyck.Rainfall.NoIntercept, Koyck.Radiation.NoIntercept, Koyck.RelHumidity.NoIntercept)
+```
+
+```{r}
+data.frame(AIC, BIC, Adjusted_Rsquared, MASE) %>% arrange(MASE)
+```
+
+Thus, as per AIC,BIC,MASE (best in terms of forecasting), and Adjusted R-Squared, Koyck DLM for FFD with Relative Humidity as the regressor with no intercept (Koyck.RelHumidity.NoIntercept) is the best.
+
+##### Diagnostic check for Koyck DLM (Residual analysis)
+
+```{r}
+checkresiduals(Koyck.RelHumidity.NoIntercept$model$residuals)
+```
+
+Serial autocorrelations left in residuals are insignificant as per Ljung-Box test and ACF plot. From the time series plot and histogram of residuals, there is an obvious random pattern and normality in the residual distribution. Thus, no violation in general assumptions.
+
+##### Conclusion of Koyck DLM model
+
+- Model with Relative Humidity as regressor with no intercept is best of all 4 regressors.
+- model is significant 
+- **MASE is 0.8512851**
+- Adjusted R-squared is 99.31 % 
+- No violations in the test of assumptions
+- Serial autocorrelation is insignificant
+- From the Weak Instruments line, the model at the first stage of the least-squares fitting is significant at 5% level of significance. 
+- $\delta_2$ is insignificant and $\delta_3$ is significant at 5% level meaning FFD is significantly dependent on the Relative Humidity regressor and not dependent on last years FFD values.
+- From the Wu-Hausman test, we **do not reject** the null hypothesis that the correlation between explanatory variable ($Y_{t-1}$) and the error term is zero (There is no endogeneity) at 5% level. 
+
+
+#### Fit Autoregressive Distributed Lag Model
+
+Autoregressive Distributed lag model is a flexible and parsimonious infinite DLM. The model is represented as, <br />
+
+$Y_t = \mu + \beta_0 X_t + \beta_1 X_{t-1} + \gamma_1 Y_{t-1} + e_t$ <br />
+
+Similar to the Koyck DLM, it is possible to write this model as an infinite DLM with infinite lag distribution of any shape rather than a polynomial or geometric shape. The model is denoted as ARDL(p,q). To fit the model we will use ardlDlm() function is used. Lets find the best lag length using AIC and BIC score through an iteration. Lets set max lag length to 14. Lets do this for each regressor individually. 
+
+##### 1. Temperature as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ Temperature, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+ARDL(13,2) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(13,2):** <br />
+
+```{r}
+ARDL.Temperature.13x2 = ardlDlm(formula = FFD ~ Temperature, data = FFD_dataset, p = 13, q = 2)
+summary(ARDL.Temperature.13x2)
+checkresiduals(ARDL.Temperature.13x2$model, test = "LB")
+MASE(ARDL.Temperature.13x2)
+```
+
+Model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ -1 + Temperature, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+
+ARDL(13,3) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+
+**ARDL(13,3):** <br />
+
+```{r}
+ARDL.Temperature.NoIntercept.13x3 = ardlDlm(formula = FFD ~ -1 + Temperature, data = FFD_dataset, p = 13, q = 3)
+summary(ARDL.Temperature.NoIntercept.13x3)
+checkresiduals(ARDL.Temperature.NoIntercept.13x3$model, test = "LB")
+MASE(ARDL.Temperature.NoIntercept.13x3)
+```
+
+Model is **significant** at 5% significance level.
+
+##### 2. Rainfall as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ Rainfall, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+ARDL(2,13) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(2,13):** <br />
+
+```{r}
+ARDL.Rainfall.2x13 = ardlDlm(formula = FFD ~ Rainfall, data = FFD_dataset, p = 2, q = 13)
+summary(ARDL.Rainfall.2x13)
+checkresiduals(ARDL.Rainfall.2x13$model, test = "LB")
+MASE(ARDL.Rainfall.2x13)
+```
+
+Model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ -1 + Rainfall, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+
+ARDL(12,5) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(12,5):** <br />
+
+```{r}
+ARDL.Rainfall.NoIntercept.12x5 = ardlDlm(formula = FFD ~ -1 + Rainfall, data = FFD_dataset, p = 12, q = 5)
+summary(ARDL.Rainfall.NoIntercept.12x5)
+checkresiduals(ARDL.Rainfall.NoIntercept.12x5$model, test = "LB")
+MASE(ARDL.Rainfall.NoIntercept.12x5)
+```
+
+Model is **significant** at 5% significance level.
+
+##### 3. Radiation as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ Radiation, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+
+ARDL(2,13) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(2,13):** <br />
+
+```{r}
+ARDL.Radiation.2x13 = ardlDlm(formula = FFD ~ Radiation, data = FFD_dataset, p = 2, q = 13)
+summary(ARDL.Radiation.2x13)
+checkresiduals(ARDL.Radiation.2x13$model, test = "LB")
+MASE(ARDL.Radiation.2x13)
+```
+
+Model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ -1 + Radiation, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+
+ARDL(1,14) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(1,14):** <br />
+
+```{r}
+ARDL.Radiation.NoIntercept.1x14 = ardlDlm(formula = FFD ~ -1 + Radiation, data = FFD_dataset, p = 1, q = 14)
+summary(ARDL.Radiation.NoIntercept.1x14)
+checkresiduals(ARDL.Radiation.NoIntercept.1x14$model, test = "LB")
+MASE(ARDL.Radiation.NoIntercept.1x14)
+```
+
+Model is **insignificant** at 5% significance level.
+
+##### 4. Relative Humidity as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ RelHumidity, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+
+ARDL(12,4) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(12,4):** <br />
+
+```{r}
+ARDL.RelHumidity.12x4 = ardlDlm(formula = FFD ~ RelHumidity, data = FFD_dataset, p = 12, q = 4)
+summary(ARDL.RelHumidity.12x4)
+checkresiduals(ARDL.RelHumidity.12x4$model, test = "LB")
+MASE(ARDL.RelHumidity.12x4)
+```
+
+Model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = FFD ~ -1 + RelHumidity, data = FFD_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC >= 0 & BIC >= 0),1) # Best model as per BIC
+```
+
+ARDL(14,1) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(14,1):** <br />
+
+```{r}
+ARDL.RelHumidity.NoIntercept.14x1 = ardlDlm(formula = FFD ~ -1 + RelHumidity, data = FFD_dataset, p = 14, q = 1)
+summary(ARDL.RelHumidity.NoIntercept.14x1)
+checkresiduals(ARDL.RelHumidity.NoIntercept.14x1$model, test = "LB")
+MASE(ARDL.RelHumidity.NoIntercept.14x1)
+```
+
+Model is **significant** at 5% significance level.
+
+
+##### ARDL Model selection
+
+ARDL DLM models for Temperature, Rainfall and Relative Humidity regressors without intercept are significant. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("ARDL.Temperature.NoIntercept.13x3", "ARDL.Rainfall.NoIntercept.12x5", "ARDL.RelHumidity.NoIntercept.14x1")
+AIC <- c(AIC(ARDL.Temperature.NoIntercept.13x3), AIC(ARDL.Rainfall.NoIntercept.12x5), AIC(ARDL.RelHumidity.NoIntercept.14x1))
+BIC <- c( BIC(ARDL.Temperature.NoIntercept.13x3), BIC(ARDL.Rainfall.NoIntercept.12x5), BIC(ARDL.RelHumidity.NoIntercept.14x1))
+Adjusted_Rsquared <- c(0.9993, 0.9987, 0.9964)
+MASE <- MASE(ARDL.Temperature.NoIntercept.13x3, ARDL.Rainfall.NoIntercept.12x5, ARDL.RelHumidity.NoIntercept.14x1)
+```
+
+```{r}
+data.frame(AIC, BIC, Adjusted_Rsquared, MASE) %>% arrange(MASE)
+```
+
+Thus, as per AIC, BIC, MASE (best in terms of forecasting), and Adjusted R-Squared, ARDL(13,3) model for FFD with Temperature as the regressor with no intercept (ARDL.Temperature.NoIntercept.13x3) is the best.
+
+**Diagnostic check for ARDL (Residual analysis):** <br />
+
+```{r}
+checkresiduals(ARDL.Temperature.NoIntercept.13x3$model$residuals)
+```
+
+**Serial autocorrelations** left in residuals are **significant** as per Ljung-Box test and ACF plot. From the time series plot and histogram of residuals, there is a random pattern and normality in the residual distribution. Thus, no violation in general assumptions.
+
+##### Conclusion of ARDL DLM model
+
+- Model Temperature as regressor with no intercept is best of all 4 regressors.
+- ARDL.Temperature.NoIntercept.13x3 model is significant 
+- **MASE is 0.05850544**
+- Adjusted R-squared is 99.93% 
+- No violations in the test of assumptions
+- Serial autocorrelation is significant
+
+#### Most appropriate DLM model based on MASE (DLM Model Selection)
+
+The 4 DLM models are, <br />
+
+- Finite DLM model: **DLM.RelHumidity**
+- Polynomial DLM model: **PolyDLM.Temperature**
+- Koyck transformed geometric DLM model: **Koyck.RelHumidity.NoIntercept**
+- Autoregressive DLM model: **ARDL.Temperature.NoIntercept.13x3**
+
+**mean absolute scaled errors** or **MASE** of these models are, <br />
+
+```{r}
+MASE(DLM.RelHumidity, PolyDLM.Temperature, Koyck.RelHumidity.NoIntercept, ARDL.Temperature.NoIntercept.13x3) %>% arrange(MASE)
+```
+
+#### Conclusion of Distributed Lag models (DLM) modelling
+
+The Best DLM model for the FFD response which gives the most accurate forecasting based on the MASE measure is the Finite DLM model having Relative Humidity as regressor with no intercept , **DLM.RelHumidity** with MASE measure of 0.01053278. 
+
+
+### B. Dynamic linear models (dynlm package)
+
+Dynamic linear models are general class of time series regression models which can account for trends, seasonality, serial correlation between response and regressor variable, and **most importantly the affect of intervention points**.
+
+The response of a general Dynamic linear model is,  <br />
+
+$Y_t = \omega_2Y_{t-1} + (\omega_0 + \omega_1)P_t - \omega_2\omega_0P_{t-1} + N_t$ <br />
+
+where, <br />
+
+- $Y_t$ is the response 
+- $\omega_2$ is the coefficient of 1 time unit lagged response
+- $P_t$ is the current pulse affect at the intervention point with $(\omega_0 + \omega_1)$ coefficient representing the instantaneous effect of the intervention point 
+- $P_{t-1}$ is the past pulse affect with  $\omega_2\omega_0$ coefficient 
+- $N_t$ is the process represents the component where there is no intervention and is referred to as the natural or unperturbed process.
+
+Lets revisit the time series plot for the response, FFD, to visualize possible intervention points <br />
+
+```{r}
+plot(FFD)
+```
+
+As mentioned at the descriptive analysis stage, there is no clear intervention that we identify visually. But maybe **years 2002 and 2003** might be intervention points just because of their magnitude. Assuming this intervention point lets fit a Dynamic Linear model and see if the pulse function at years 2002 and 2003 are significant or not.
+
+As always we do, we will have a look at ACF and PACF plots of the FFD series first.
+
+```{r}
+acf(FFD, main="ACF of FFD")
+pacf(FFD, main ="PACF of FFD")
+```
+
+In ACF plot we see a slowly decaying pattern indicating trend in the FFD series. In PACF plot we see 1 high vertical spike indicating trend. No significant seasonal behavior is observed. Thus, lets fit a Dynamic linear model with trend component and no seasonal component. For thoroughness, lets test all possible combinations using trend, multiple lags of FFD, and most importantly, the Pulse at 1996.
+
+Now, lets fit Dynamic Linear model using dynlm() as shown below, (Note, the potential intervention point was identified at years 2002 and 2003). 
+
+**With intercept :** <br />
+
+```{r}
+Y.t = FFD
+T = c(19,20) # The time point when the intervention occurred 
+P.t = 1*(seq(FFD) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model = dynlm(Y.t ~ L(Y.t , k = 1) + P.t  + trend(Y.t)) # library(dynlm)
+
+Dyn.model1 = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + P.t.1) # library(dynlm)
+
+Dyn.model2 = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Dyn.model3 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Dyn.model4 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model5 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t) # library(dynlm)
+
+AIC(Dyn.model, Dyn.model1, Dyn.model2, Dyn.model3, Dyn.model4, Dyn.model5) %>% arrange(AIC)
+
+summary(Dyn.model4)
+```
+
+**Without intercept :** <br />
+
+```{r}
+Y.t = FFD
+T = c(19,20) # The time point when the intervention occurred 
+P.t = 1*(seq(FFD) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model1.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + P.t + P.t.1) # library(dynlm)
+
+Dyn.model2.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Dyn.model3.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Dyn.model4.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t)) # library(dynlm)
+
+AIC(Dyn.model.NoIntercept, Dyn.model1.NoIntercept, Dyn.model2.NoIntercept, Dyn.model3.NoIntercept, Dyn.model4.NoIntercept) %>% arrange(AIC)
+
+summary(Dyn.model4.NoIntercept)
+```
+
+#### Dynamic Linear Model selection
+
+The best Dynamic Linear models with and without intercept were Dyn.model4 and Dyn.model4.NoIntercept respectively. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("Dyn.model4", "Dyn.model4.NoIntercept")
+AIC <- c(AIC(Dyn.model4), AIC(Dyn.model4.NoIntercept))
+BIC <- c( BIC(Dyn.model4), BIC(Dyn.model4.NoIntercept))
+Adjusted_Rsquared <- c(0.7071, 0.9979)
+```
+
+```{r}
+data.frame(Model,AIC, BIC, Adjusted_Rsquared) %>% arrange(AIC)
+```
+
+Thus, as per Adjusted R-Squared, Dynamic Linear model for FFD with no intercept (Dyn.model4) is the best.
+
+Dyn.model4 is the best Dynamic Linear model as per Adjusted R-Squared with 3 lagged components of the response (FFD), a **significant pulse component at years 2002 and 2003**, and trend and seasonal components of FFD series. Lets look at the summary statistics and check residuals
+
+```{r}
+summary(Dyn.model4)
+checkresiduals(Dyn.model4)
+```
+**Summary of Dynamic linear model, Dyn.model4.NoIntercept** <br />
+
+- model is significant at 5% significance level
+- Adjusted R-squared is 70.73% 
+- **No violations** in the test of assumptions
+- Serial autocorrelations are significant
+
+#### Conclusion of Dynamic Linear model
+
+The dynamic linear model, **Dyn.model4, is significant** and the **pulse (P.t) component significant** at year 2002 and 2003.
+
+
+### C. Exponential Smoothing Method and State-Space models
+
+Exponential smoothing methods including the state-space models takes into consideration the Error component, Trend component and seasonality component of the time series. Each of these components can be absent (None), Additive (A) or Multiplicative (M). Hence, these models are represented as ETS(ZZZ) representing the Error, Trend and Seasonal component respectively.
+
+The best Exponential Smoothing model or State-Space model for our FFD time series can be easily identified by triggering the auto-search by setting the argument model = "ZZZ" in the ets() as shown below. Also, we will check if damped trend and the possibility of drift give us better models.
+
+**Best Exponential Smoothing model -** <br />
+
+```{r}
+autofit.ETS = ets(FFD, model="ZZZ")
+summary(autofit.ETS)
+checkresiduals(autofit.ETS)
+```
+
+System chooses the Simple exponential smoothing with Multiplicative errors ETS(MNN). MASE is 0.8759362.
+
+**Best Exponential Smoothing model with damping -** <br />
+
+```{r}
+autofit.ETS.damped = ets(FFD, model="ZZZ", damped = TRUE)
+summary(autofit.ETS.damped)
+checkresiduals(autofit.ETS.damped)
+```
+System chooses the Holt's damped model with Additive errors ETS(A,Ad,N). MASE is 0.7931096.
+
+**Best Exponential Smoothing model with drift -** <br />
+
+```{r}
+autofit.ETS.drift = ets(FFD, model="ZZZ", beta = 1E-4)
+summary(autofit.ETS.drift)
+checkresiduals(autofit.ETS.drift)
+```
+
+Again system chooses the ETS(MNN) model.
+
+Thus, the best Exponential smoothing or State-state model for our FFD series is the best Holt's damped model with Additive errors ETS(A,Ad,N) with MASE score of 0.7931096.
+
+#### Conclusion of Exponential Smoothing Method and State-Space models
+
+The best State-space model which gives the most accurate forecasting based on the MASE measure is **ETS(A,Ad,N)** having lowest MASE measure of 0.7931096 of all possible State space models.
+
+
+### Overall Most Appropriate Regression model (Model Selection)
+
+Based on the 4 Time series regression methods considered, the best model as per MASE measure for each method is summarized below, <br />
+
+- A. Best Distributed lag models is - Finite DLM model having Relative humidity as regressor without an intercept ***DLM.RelHumidity*** with MASE measure of **0.01053278**, AIC of **39.90284**, BIC of **54.06747** and Adjusted R-squared of **99.86%**.
+
+- B. Best Dynamic linear models is - ***Dyn.model4.NoIntercept*** having 3 lagged components of the response (FFD), a significant pulse component at years 2002 and 2003, and trend and seasonal components with AIC of **234.6498**, BIC of **243.9753** and Adjusted R-squared of **70.73%**.
+
+- C. Best Exponential smoothing and State-Space model is - Holt's damped model with Additive errors **ETS(A,Ad,N)** with MASE measure of **0.7931096**, AIC of **315.0015** and BIC of **323.6054**.
+
+Clearly, the best model is Finite DLM model having Relative humidity as regressor without an intercept ***DLM.RelHumidity*** as per AIC, BIC, Adjusted R-squared and MASE measures.
+
+### Best Time Series regression model for Forecasting
+
+Best Time Series regression model is - **Finite DLM model having Relative humidity as regressor without an intercept (DLM.RelHumidity)** with MASE measure of **0.01053278**.
+
+
+## Detailed Graphical and statistical tests of assumptions for $DLM.RelHumidity$ model (Residual Analysis)
+
+Residual analysis to test model assumptions. <br />
+
+Lets perform a detailed ***Residual Analysis*** to check if any model assumptions have been violated. 
+
+The estimator error (or residual) is defined by: <br />
+
+$\hat{\epsilon_i}$ = $Y_i$ - $\hat{Y_i}$ (i.e. observed value less -
+trend value)
+
+The following problems are to be checked,
+
+  1. linearity in distribution of error terms
+  2. The mean value of residuals is zero 
+  3. Serial autocorrelation
+  4. Normality of distribution of error terms
+
+Lets first apply diagnostic check using checkresiduals() function, 
+
+``` {r}
+checkresiduals(DLM.RelHumidity)
+```
+
+1. From the Residuals plot, linearity is not violated as the residuals are randomly distributed across the mean. Thus, **linearity in distribution of error terms is not violated**
+
+2. To test mean value of residuals is zero or not, lets calculate mean value of residuals as,
+
+```{r}
+mean(DLM.RelHumidity$model$residuals)
+```
+
+As mean value of residuals is close to 0, **zero mean residuals is not violated**.
+
+3. In the checkresiduals output, the Ljung-Box test output is displayed. According to this test, the hypothesis are,
+
+Which has, <br />
+$H_0$ : series of residuals exhibit no serial autocorrelation of any order up to p <br />
+$H_a$ : series of residuals exhibit serial autocorrelation of any order up to p <br />
+
+From the Ljung-Box test output, since p (0.1331) > 0.05, we do not reject the null hypothesis of no serial autocorrelation. 
+
+Thus, according to this test and ACF plot, we can conclude that the **serial correlation left in residuals is insignificant**.
+
+4. From the histogram shown by checkresiduals(), residuals seem to follow normality. Lets test this statistically,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(DLM.RelHumidity$model$residuals)
+```
+
+From the Shapiro-Wilk test, since p>0.05 significance level, we do reject the null hypothesis that states the data is normal. Thus, residuals of DLM.RelHumidity model are **normally** distributed.
+
+**Summarizing residual analysis on $DLM.RelHumidity$ model:**
+
+Assumption 1: The error terms are randomly distributed and thus show linearity: ***Not violated*** <br /> 
+Assumption 2: The mean value of E is zero (zero mean residuals): ***Not violated*** <br /> 
+Assumption 4: The error terms are independently distributed, i.e. they are not autocorrelated: ***Not violated*** <br /> 
+Assumption 5: The errors are normally distributed. **Not violated** <br /> 
+
+Having no residual assumptions' violations, the Finite DLM model having Relative humidity as regressor without an intercept (DLM.RelHumidity) model is good for accurate forecasting of FFD. Lets forecast for the next 4 years ahead FFD,
+
+
+## Forecasting
+
+Using MASE measure, Finite DLM model, DLM.RelHumidity is best fitted model to forecast FFD. Lets estimate and plot 4 years (2015-2018) ahead forecasts for FFD series. 
+
+Observed and fitted values are plotted below. This plot indicates a good agreement between the model and the original series. (Note, since lag is set as 14 (q=14), fitted values are not available for the first 14 years)
+
+```{r}
+plot(FFD, ylab='FFD', xlab = 'Year', type="l", col="black", main="Observed and fitted values using DLM.RelHumidity model on FFD")
+lines(ts(DLM.RelHumidity$model$fitted.values, start = c(1998)), col="red")
+legend("topleft",lty=1, text.width = 12,
+       col=c("black", "red"), 
+       c("FFD series", "DLM.RelHumidity fit"))
+```
+
+Using the given 4 years ahead future covariates values, we can forecast our FFD response.
+
+```{r}
+Future_Covariates <- read.csv("C:/Users/admin/Downloads/Covariate x-values for Task 2.csv")
+head(Future_Covariates)
+```
+
+Our DLM.RelHumidity model uses only 1 covariate, Relative Humidity. 4 years ahead point forecasts of FFD using Relative Humidity covariate is,
+
+```{r}
+DLM.RelHumidity = dlm(formula = FFD ~ RelHumidity, data = FFD_dataset, q = 14)
+x.new =  c(Future_Covariates$RelHumidity)
+forecasts.dlm = dLagM::forecast(model = DLM.RelHumidity, x = x.new, h = 4)$forecasts
+```
+
+
+**Forecast using overall BEST fitting model:** <br />
+
+The point forecasts and the forecast plot using the overall best fitting model, DLM.RelHumidity is given below,
+
+```{r}
+df <- data.frame(
+  Finite_DLM_forecasts = c(forecasts.dlm)
+) 
+row.names(df) <- c("2015", "2016", "2017", "2018")
+df
+
+FFD.extended1 = c(FFD, forecasts.dlm)
+
+{
+plot(ts(FFD.extended1, start = c(1984)), type="l", col = "red",
+ylab = "FFD", xlab = "Year", 
+main="4 years ahead forecasts for FFD series
+      using DLM.RelHumidity model")          
+lines(FFD,col="black",type="l")
+legend("topleft",lty=1,
+       col=c("black", "red"), 
+       c("FFD series", "Finite DLM forecasts"))
+}
+```
+
+The forecasts for best Finite DLM, Polynomial DLM, Koyck, Dynamic Linear model, and Exponential smoothing/State-space model are plotted and given below, 
+
+**For Distributed Lag models:** <br />
+
+The 4 years ahead Point forecasts for the DLM models are printed and plotted below, (Note, since the best Koyck and ARDL models do not have intercept, their forecasts aren't printed)
+
+```{r}
+# Forecasts using Finite DLM 
+x.new = c(Future_Covariates$RelHumidity)
+forecasts.dlm = dLagM::forecast(model = DLM.RelHumidity, x = x.new, h = 4)$forecasts
+
+# Forecasts using Polynomial DLM 
+x.new2 = c(Future_Covariates$Temperature)
+forecasts.polydlm = dLagM::forecast(model = PolyDLM.Temperature , x = x.new2, h = 4)$forecasts
+
+df <- data.frame(
+  Finite_DLM_forecasts = c(forecasts.dlm),
+  Polynomial_DLM_forecasts = c(forecasts.polydlm)
+) 
+row.names(df) <- c("2015", "2016", "2017", "2018")
+df
+
+FFD.extended1 = c(FFD , forecasts.dlm)
+FFD.extended2 = c(FFD , forecasts.polydlm)
+
+{
+plot(ts(FFD.extended1, start = c(1984)),type="l", col = "Red",
+ylab = "FFD", xlab = "Year", 
+main="4 years ahead forecast for FFD series
+      using DLM models")          
+lines(ts(FFD.extended2, start = c(1984)),col="blue",type="l")
+lines(FFD,col="black",type="l")
+legend("topleft",lty=1,
+       col=c("black", "red", "blue"), 
+       c("FFD series", "Finite DLM forecasts", "Polynomial DLM forecasts"))
+}
+
+```
+**For Dynamic Linear model:** <br />
+
+The 4 years ahead point forecasts are printed and plotted below, 
+
+```{r}
+Dyn.model4 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t)) # library(dynlm)
+
+q = 4
+n = nrow(Dyn.model4$model)
+FFD.frc = array(NA , (n + q))
+FFD.frc[1:n] = Y.t[4:length(Y.t)] # length(1:n) = length(2:length(Y.t)) = 28
+trend = array(NA,q)
+trend.start = Dyn.model4$model[n,"trend(Y.t)"]
+trend = seq(trend.start , trend.start + q/1, 1)
+
+for (i in 1:q){
+  #months = array(0,11)
+  #months[(i+4)%%12] = 1 # Data ends in May, to start the new forecast from JUNE, put i + 4.
+  data.new = c(1,FFD.frc[n-1+i], FFD.frc[n-2+i], FFD.frc[n-3+i], P.t[n] ,trend[i]) 
+  FFD.frc[n+i] = as.vector(Dyn.model4$coefficients) %*% data.new
+}
+
+par(mfrow=c(1,1))
+
+plot(Y.t,xlim=c(1984,2018),ylab='FFD',xlab='Year',main = "Time series plot of FFD series with 4 years ahead forecasts (in red)")
+lines(ts(FFD.frc[(n+1):(n+q)],start=c(2015)),col="red")
+
+```
+
+**For Exponential smoothing/State-space model:** <br />
+
+The 4 years ahead point forecasts and Confidence intervals are printed and plotted below, 
+
+```{r}
+forecasts.Dynlm = forecast::forecast(autofit.ETS.damped, h = 4)
+forecasts.Dynlm
+plot(forecasts.Dynlm, ylab="FFD", type="l", fcol="red", xlab="Year", ylim= c(100, 400),
+main="4 years ahead forecasts using Dynamic Linear model")
+legend("topleft",lty=1, pch=1, col=1:2, c("FFD series","Dynlm forecasts"))
+```
+
+## Conclusion
+
+The most fitting model for our FFD series in terms of MASE which assesses the forecast accuracy is the Finite DLM model with Relative Humidity as regressor $DLM.RelHumidity$. The point forecasts for 4 years ahead reported using the forecast() of dLagM package are 217.4990, 164.6623, 203.6109, and 271.5180 respectively (Confidence Intervals are not outputted).
+
+## Future Directions
+
+Potentially better forecasting methods can be explored, compared and diagnosed for better fit.
+
+
+# Task 3 Part (a): Univariate Forecasting of Rank-Based Order Similarity Metric: Three-Year Ahead Predictions
+
+## Data Description
+
+The dataset holds 6 columns and 31 observations. They are, Year column, the Rank-based Order similarity metric (RBO) which denotes changes in flowering orders of the 81 plant species measured by computing the similarity between annual flowering order and the flowering order of 1983. Other 4 columns are climate factors namely, rainfall (rain), temperature (temp), radiation level (rad), and relative humidity (RH) - all measured from 1984 to 2014.
+
+## Objective
+
+Our aim for the RBO dataset is to give best 3 years ahead forecasts by determining the most accurate and suitable regression model that determines the annual Rank-based Order similarity metric (RBO) in terms of MASE using single predictor (univariate analysis). A descriptive analysis will be conducted initially. Model-building strategy will be applied to find the best fitting model from the time series regression methods (dLagM package) and dynamic linear models (dynlm package).
+
+## Model Selection Criteria
+
+MASE, Information Criteria (AIC and BIC), and Adjusted R Squared.
+
+## Read Data
+
+```{r}
+RBO_dataset <- read.csv("C:/Users/admin/Downloads/RBO.csv")
+head(RBO_dataset)
+```
+
+## Identification of the response and the regressor variables
+
+For fitting a regression model, the response is Rank-based flowering Order similarity metric, **RBO**, and the 4 regressor variables are the **Temperature**, **Rainfall**, **Radiation Level** and **Relative Humidity**.
+
+- y = RBO = Rank-based flowering Order similarity metric with reference year at 1983
+- x1 = Temperature 
+- x2 = Rainfall 
+- x3 = Radiation 
+- x4 = RelHumidity = Relative Humidity
+
+All the 5 variables are continuous variables.
+
+### Read Regressor and Response variables
+
+Lets first get the regressor and response as TS objects,
+
+```{r}
+RBO = ts(RBO_dataset[,2], start = c(1984))
+Temperature = ts(RBO_dataset[,3], start = c(1984))
+Rainfall = ts(RBO_dataset[,4], start = c(1984))
+Radiation = ts(RBO_dataset[,5], start = c(1984))
+RelHumidity = ts(RBO_dataset[,6], start = c(1984))
+data.ts = ts(RBO_dataset, start = c(1984)) # Y and x in single dataframe
+```
+
+
+### Relationship between Regressor and Response variables
+
+Lets scale, center and plot all the 5 variables together
+
+```{r}
+data.scale = scale(data.ts)
+plot(data.scale[,2:6], plot.type="s", col=c("black", "red", "blue", "green", "yellow"), main = "RBO (Black - Respone), Temperature (Red - X1),\n  Rainfall (Blue - X2), Radiation (Green - X3), RelHumidity (Yellow - X4)")
+```
+
+It is hard to read the correlations between the regressors and the response and the among the response themselves. But it is fair to say the 5 variables show some correlations. Lets check for correlation statistically using ggpairs(),
+
+```{r}
+ggpairs(data = RBO_dataset, columns = c(2,3,4,5,6), progress = FALSE) #library(GGally)
+```
+
+Hence, some correlations between the 4 regressors and response is present. We can generate regression model based on these correlations. First, lets look at the descriptive statistics
+
+
+## Descriptive Analysis
+
+Since we are generating regression model which estimates the response, **$RBO$**, lets focus on RBOs statistics.
+
+
+### Summary statistics
+
+```{r}
+summary(RBO)
+```
+The mean and median of the RBO are very close indicating symmetrical distribution.
+
+### Time Series plot:
+
+The time series plot for our data is generated using the following code chunk,
+
+```{r}
+plot(RBO, ylab='Yearly average of RBO',xlab='Year',
+     type='o', main="Figure 1: Yearly Average RBO Trend (1984-2014)")
+```
+
+**Plot Inference :** <br />
+
+From Figure 1, we can comment on the time series’s,
+
+- **Trend:** The overall shape of the trend seems to follow an downward trend. Thus, indicating **non-stationarity**.
+
+- **Seasonality:** From the plot, no seasonal behavior is seen.
+
+- **Change in Variance:** The variation is very random
+
+- **Behavior:** We notice mixed behavior of MA and AR series. AR behavior is seen as we obverse following data points. MA behavior is evident due to up and down fluctuations in the data points.
+
+- **Intervention/Change points:** Year 1996 might be an intervention point as the mean level of the RBO series falls notably low from this point onwards.
+
+
+### ACF and PACF plots:
+
+```{r}
+acf(RBO, main="ACF of RBO")
+pacf(RBO, main ="PACF of RBO")
+```
+
+- **ACF plot:** We notice first 3 autocorrelations are significant. A slowly decaying pattern indicates **non stationary** series. We do not see any ‘wavish’ form. Thus, **no significant seasonal behavior** is observed.
+
+- **PACF plot:** We see 1 high vertical spike indicating **non stationary** series. We have observed non stationarity in the time series plot as well. Also, the second correlation bar is significant as well.
+
+### Check normality
+
+Many model estimating procedures assume normality of the residuals. If this assumption doesn’t hold, then the coefficient estimates are not optimum. Lets look at the Quantile-Quantile (QQ) plot to to observe normality visually and the Shapiro-Wilk test to statistically confirm the result.
+
+```{r}
+qqnorm(RBO, main = "Normal Q-Q Plot of Average yearly RBO")
+qqline(RBO, col = 2)
+```
+
+We see deviations from normality. Clearly, upper tail is off and most of the data in middle is off the line as well. Lets check statistically using shapiro-wilk test. Lets state the hypothesis of this test,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(RBO)
+```
+
+From the Shapiro-Wilk test, since p > 0.05 significance level, we do not reject the null hypothesis that states the data is normal. Thus, RBO series is **normally** distributed.
+
+### Test Stationarity
+
+The time series plot, ACF and PACF of RBO time series at the descriptive analysis stage of time series tells us non-stationarity in our time series. Lets use ADF and PP tests,
+
+**Using ADF (Augmented Dickey-Fuller) test :** <br />
+  
+Lets confirm the non-stationarity using Dickey-Fuller Test or ADF test. Lets state the hypothesis, <br />
+
+$H_0$ : Time series is Difference non-stationary <br />
+$H_a$ : Time series is Stationary
+
+```{r warning = FALSE}
+adf.test(RBO) #library(tseries)
+```
+
+since p-value > 0.05, we do not reject null hypothesis of non stationarity. we can conclude that the **series is non-stationary** at 5% level of significance.
+
+**Using PP (Phillips-Perron) test :** <br />
+  
+The null and alternate hypothesis are same as ADF test.
+
+```{r}
+PP.test(RBO, lshort = TRUE)
+PP.test(RBO, lshort = FALSE)
+```
+
+According to the PP tests, RBO series is **stationary** at 5% level
+
+The two procedures give differing outcomes. Since Philips-Perron (PP) test is non-parametric, i.e. it does not require to select the level of serial correlation as in ADF and since our RBO series does not have significant serial autocorrelations, we can go with the outcome of PP test stating the **RBO series is stationary**.
+
+
+### Conclusion from descriptive analysis:
+
+- From the time series plot, ACF/PACF plots and PP tests, we found our RBO response **is stationary**. **Differencing is not required**.
+- Trend is **normal**. Thus **Box-cox transformation is NOT required**.
+
+
+## Decomposition
+
+At the descriptive analysis stage, from the time series plot and the ACF/PACF plots, no seasonal pattern was observed but a downward trend was observed. Lets decompose the RBO series and confirm. STL decomposition method will be used.
+
+### STL decomposition
+
+Lets set t.window to 15 and look the STL decomposed plots,
+
+We can adjust the series for seasonality by subtracting the seasonal component from the original series using the following code chunk,
+
+Note - Since we cannot do decomposition on a series having frequency as 1, lets falsely use frequency as 2. Also note, the time truncates from 2014 to 2000 as the frequency is doubled. This is okay since we are just interested in the decomposition.
+
+```{r}
+# Code gist - Apply STL decomposition to get seasonally adjusted and trend adjusted and visually compare w.r.t to original time series
+
+RBOX = ts(RBO_dataset[,2], start = c(1984),frequency = 2) # set frequency
+stl.RBO <- stl(window(RBOX, start=c(1984)), t.window=15, s.window="periodic", robust=TRUE)
+
+par(mfrow=c(3,1))
+
+plot(RBOX,ylab='RBO',xlab='Time',
+     type='o', main="Original RBO Time Series")
+
+plot(seasadj(stl.RBO), ylab='RBO',xlab='Time', main = "Seasonally adjusted RBO")
+
+stl.RBO.trend = stl.RBO$time.series[,"trend"] # Extract the trend component from the output
+stl.RBO.trend.adjusted = RBOX - stl.RBO.trend
+
+plot(stl.RBO.trend.adjusted, ylab='RBO',xlab='Time', main = "Trend adjusted RBO")
+
+par(mfrow=c(1,1))
+```
+On very close inspection of the plots above, the trend adjusted series looks more different (than the seasonally adjusted series) from the Original RBO series. Meaning, trend component is more significant than the seasonal component in the RBO series.
+
+### Conclusion of Decomposition
+
+Trend component is more significant than the seasonal component in the RBO series. Thus, we expect the fitted model to have no seasonal component.
+
+
+## Modeling
+
+Time series regression methods namely, <br />
+  
+- A. Distributed lag models (dLagM package), 
+- B. Dynamic linear models (dynlm package)
+
+### A. Distributed lag models 
+
+Based on whether the lags are known (Finite DLM) or undetermined (Infinite DLM), 4 major modelling methods will be tested, namely,
+
+- Basic Finite Distributed lag model,
+- Polynomial DLM,
+- Koyck transformed geometric DLM,
+- and Autoregressive DLM.
+
+
+#### Fit Finite DLM 
+
+The response of a finite DLM model with 1 regressor is represented as shown below, <br />
+  
+$Y_t = \alpha + \sum_{s=0}^{q} \beta_s X_{t-s} + \epsilon_t$ <br />
+
+where, <br />
+
+- $\alpha$ is intercept
+- $\beta_s$ is coefficient of s lagged response $X_t$ 
+- and $\epsilon_t$ is the error term
+
+In our dataset, we have 4 regressors. For uni variate analysis lets fit models with single regressor for each of the 4 regressors.
+
+##### 1. Temperature as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = RBO ~ Temperature, data = RBO_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.Temperature = dlm(formula = RBO ~ Temperature, data = RBO_dataset, q = 14)
+summary(DLM.Temperature)
+```
+DLM.Temperature Model is **insignificant** (p-value = 0.526) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.Temperature.noIntercept = dlm(formula = RBO ~ 0 + Temperature, data = RBO_dataset, q = 14)
+summary(DLM.Temperature.noIntercept)
+```
+DLM.Temperature.noIntercept Model is **significant**.
+
+
+##### 2. Rainfall as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = RBO ~ Rainfall, data = RBO_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.Rainfall = dlm(formula = RBO ~ Rainfall, data = RBO_dataset, q = 14)
+summary(DLM.Rainfall)
+```
+DLM.Rainfall Model is **insignificant** (p-value = 0.4127) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.Rainfall.noIntercept = dlm(formula = RBO ~ 0 + Rainfall, data = RBO_dataset, q = 14)
+summary(DLM.Rainfall.noIntercept)
+```
+DLM.Rainfall.noIntercept Model is **significant**.
+
+
+##### 3. Radiation as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = RBO ~ Radiation, data = RBO_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.Radiation = dlm(formula = RBO ~ Radiation, data = RBO_dataset, q = 14)
+summary(DLM.Radiation)
+```
+DLM.Radiation Model is **insignificant** (p-value = 0.6086) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.Radiation.noIntercept = dlm(formula = RBO ~ 0 + Rainfall, data = RBO_dataset, q = 14)
+summary(DLM.Radiation.noIntercept)
+```
+
+DLM.Radiation.noIntercept Model is **significant**.
+
+##### 4. RelHumidity as regressor
+
+**With intercept :** <br />
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = RBO ~ RelHumidity, data = RBO_dataset, q.min = 1, q.max = 20,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 14 has the smallest AIC and BIC scores. Fit model with q = 14, <br />
+
+```{r}
+DLM.RelHumidity = dlm(formula = RBO ~ RelHumidity, data = RBO_dataset, q = 14)
+summary(DLM.RelHumidity)
+```
+DLM.RelHumidity Model is **insignificant** (p-value = 0.3235) at 0.05 significant level. <br />
+
+**Without intercept :** <br />
+
+```{r}
+DLM.RelHumidity.noIntercept = dlm(formula = RBO ~ 0 + RelHumidity, data = RBO_dataset, q = 14)
+summary(DLM.RelHumidity.noIntercept)
+```
+
+DLM.RelHumidity.noIntercept Model is **significant**.
+
+
+##### Finite DLM Model Selection
+
+Models using all 4 predictors without intercept are significant. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("DLM.Temperature.noIntercept", "DLM.Rainfall.noIntercept", "DLM.Radiation.noIntercept", "DLM.RelHumidity.noIntercept")
+AIC <- c(AIC(DLM.Temperature.noIntercept), AIC(DLM.Rainfall.noIntercept), AIC(DLM.Radiation.noIntercept), AIC(DLM.RelHumidity.noIntercept))
+BIC <- c(BIC(DLM.Temperature.noIntercept), BIC(DLM.Rainfall.noIntercept), BIC(DLM.Radiation.noIntercept), BIC(DLM.RelHumidity.noIntercept))
+Adjusted_Rsquared <- c(0.999, 0.9969, 0.9969, 0.9999)
+MASE <- MASE(DLM.Temperature.noIntercept, DLM.Rainfall.noIntercept, DLM.Radiation.noIntercept, DLM.RelHumidity.noIntercept)
+```
+
+```{r}
+data.frame(AIC, BIC, Adjusted_Rsquared, MASE) %>% arrange(AIC)
+```
+
+Thus, as per AIC, BIC and MASE, finite distributed lag model for RBO with Relative Humidity as the regressor with no intercept (DLM.RelHumidity.noIntercept) is the best.
+
+
+##### Diagnostic check for DLM.RelHumidity.noIntercept (Residual analysis)
+
+We can apply a diagnostic check using checkresiduals() function from the forecast package.
+
+```{r}
+checkresiduals(DLM.RelHumidity.noIntercept$model$residuals) # forecast package
+```
+
+In this output, <br />
+  
+- from the time series plot and histogram of residuals, there is an obvious random pattern and normality in the residual distribution. Thus, no violation in general assumptions.
+- the Ljung-Box test output is displayed. According to this test, the null hypothesis that a series of residuals exhibits no autocorrelation up-to lag 10 is violated. According to this test and ACF plot, we can conclude that the **serial correlation left in residuals is NOT significant.**
+
+
+##### Conclusion of Finite DLM model
+
+- Best model is with Relative Humidity as the regressor with no intercept (DLM.RelHumidity.noIntercept).
+- DLM.RelHumidity.noIntercept Model is significant.
+- **MASE is 0.07231577**
+- Adjusted R-squared is 99.99%.
+- No violations in the test of assumptions
+- Serial autocorrelation is not significant
+
+**ATTENTION** - Lets summarise the models from here on and not go into each models details for simplicity <br />
+
+
+#### Fit Polynomial DLM model
+
+Polynomial DLM model helps remove the effect of multicollinearity. Lets fit a polynomial DLM of order 2 for each of the 4 regressors individually.
+
+##### 1. Temperature as regressor
+
+```{r}
+PolyDLM.Temperature = polyDlm(x = as.vector(Temperature), y = as.vector(RBO), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.Temperature)
+```
+
+Polynomial DLM model with Temperature as regressor variable is **insignificant** at 5% significance level.
+
+##### 2. Rainfall as regressor
+
+```{r}
+PolyDLM.Rainfall = polyDlm(x = as.vector(Rainfall), y = as.vector(RBO), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.Rainfall)
+```
+
+Polynomial DLM model with Rainfall as regressor variable is **insignificant** at 5% significance level.
+
+##### 3. Radiation as regressor
+
+```{r}
+PolyDLM.Radiation = polyDlm(x = as.vector(Radiation), y = as.vector(RBO), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.Radiation)
+```
+
+Polynomial DLM model with Radiation as regressor variable is **insignificant** at 5% significance level.
+
+##### 4. Relative Humidity as regressor
+  
+```{r}
+PolyDLM.RelHumidity = polyDlm(x = as.vector(RelHumidity), y = as.vector(RBO), q = 14, k = 2, show.beta = FALSE)
+summary(PolyDLM.RelHumidity)
+```
+
+Polynomial DLM model with Relative Humidity as regressor variable is **insignificant** at 5% significance level.
+
+##### PolyDLM Model selection
+
+**None** of the univariate Polynomial DLM models using either of the 4 predictor were significant.
+
+##### Conclusion of Polynomial DLM model
+
+No significant Polynomial DLM model was found. 
+
+
+#### Fit Koyck geometric DLM model
+
+Here the lag weights are positive and decline geometrically. This model is called infinite geometric DLM, meaning there are infinite lag weights. Koyck transformation is applied to implement this infinite geometric DLM model by subtracting the first lag of geometric DLM multiplied by $\phi$. The Koyck transformed model is represented as, <br />
+  
+$Y_t = \delta_1 + \delta_2Y_{t-1} + \nu_t$ <br />
+
+where $\delta_1 = \alpha(1-\phi), \delta_2 = \phi, \delta_3 = \beta$ and the random error after the transformation is $\nu_t = (\epsilon_t -\phi\epsilon_{t-1})$. <br />
+
+The koyckDlm() function is used to implement a two-staged least squares method to first estimate the $\hat{Y}_{t-1}$ and the estimate $Y_{t}$ through simple linear regression. Lets deduce Koyck geometric GLM models for each of the 4 regressors individually.
+
+
+##### 1. Temperature as regressor
+
+**With intercept :** <br />
+
+```{r}
+Koyck.Temperature = koyckDlm(x = as.vector(RBO_dataset$Temperature) , y = as.vector(RBO_dataset$RBO) )
+summary(Koyck.Temperature$model, diagnostics = TRUE)
+```
+
+Koyck.Temperature is **significant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.Temperature.NoIntercept = koyckDlm(x = as.vector(RBO_dataset$Temperature) , y = as.vector(RBO_dataset$RBO), intercept = FALSE)
+summary(Koyck.Temperature.NoIntercept$model, diagnostics = TRUE)
+```
+Koyck.Temperature.NoIntercept is **significant** at 5% significance level.
+
+##### 2. Rainfall as regressor
+
+**With intercept :** <br />
+
+```{r}
+Koyck.Rainfall = koyckDlm(x = as.vector(RBO_dataset$Rainfall) , y = as.vector(RBO_dataset$RBO) )
+summary(Koyck.Rainfall$model, diagnostics = TRUE)
+```
+
+Koyck.Rainfall model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.Rainfall.NoIntercept = koyckDlm(x = as.vector(RBO_dataset$Rainfall) , y = as.vector(RBO_dataset$RBO), intercept = FALSE)
+summary(Koyck.Rainfall.NoIntercept$model, diagnostics = TRUE)
+```
+
+Koyck.Rainfall.NoIntercept model is **significant** at 5% significance level.
+
+##### 3. Radiation as regressor
+
+**With intercept :** <br />
+
+```{r}
+Koyck.Radiation = koyckDlm(x = as.vector(RBO_dataset$Radiation) , y = as.vector(RBO_dataset$RBO) )
+summary(Koyck.Radiation$model, diagnostics = TRUE)
+```
+
+Koyck.Radiation model is **significant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.Radiation.NoIntercept = koyckDlm(x = as.vector(RBO_dataset$Radiation) , y = as.vector(RBO_dataset$RBO), intercept = FALSE)
+summary(Koyck.Radiation.NoIntercept$model, diagnostics = TRUE)
+```
+
+Koyck.Radiation.NoIntercept model is **significant** at 5% significance level.
+
+##### 4. Relative Humidity as regressor
+  
+**With intercept :** <br />
+
+```{r}
+Koyck.RelHumidity = koyckDlm(x = as.vector(RBO_dataset$RelHumidity) , y = as.vector(RBO_dataset$RBO) )
+summary(Koyck.RelHumidity$model, diagnostics = TRUE)
+```
+
+Koyck.RelHumidity model is **significant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Koyck.RelHumidity.NoIntercept = koyckDlm(x = as.vector(RBO_dataset$RelHumidity) , y = as.vector(RBO_dataset$RBO), intercept = FALSE)
+summary(Koyck.RelHumidity.NoIntercept$model, diagnostics = TRUE)
+```
+
+Koyck.RelHumidity.NoIntercept model is **significant** at 5% significance level.
+
+
+##### Koyck Model selection
+
+Koyck DLM models for all 4 regressors without intercept are significant. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("Koyck.Temperature", "Koyck.Temperature.NoIntercept", "Koyck.Rainfall.NoIntercept", "Koyck.Radiation", "Koyck.Radiation.NoIntercept", "Koyck.RelHumidity", "Koyck.RelHumidity.NoIntercept")
+AIC <- c(AIC(Koyck.Temperature), AIC(Koyck.Temperature.NoIntercept), AIC(Koyck.Rainfall.NoIntercept), AIC(Koyck.Radiation), AIC(Koyck.Radiation.NoIntercept), AIC(Koyck.RelHumidity), AIC(Koyck.RelHumidity.NoIntercept))
+BIC <- c(BIC(Koyck.Temperature), BIC(Koyck.Temperature.NoIntercept), BIC(Koyck.Rainfall.NoIntercept), BIC(Koyck.Radiation), BIC(Koyck.Radiation.NoIntercept), BIC(Koyck.RelHumidity), BIC(Koyck.RelHumidity.NoIntercept))
+Adjusted_Rsquared <- c(0.08891, 0.997, 0.3803, -0.06498, 0.997, 0.1682, 0.9973)
+MASE <- MASE(Koyck.Temperature, Koyck.Temperature.NoIntercept, Koyck.Rainfall.NoIntercept, Koyck.Radiation, Koyck.Radiation.NoIntercept, Koyck.RelHumidity, Koyck.RelHumidity.NoIntercept)
+```
+
+```{r}
+data.frame(AIC, BIC, Adjusted_Rsquared, MASE) %>% arrange(MASE)
+```
+
+Thus, as per AIC, BIC, MASE (best in terms of forecasting), and Adjusted R-Squared, Koyck DLM for RBO with Relative Humidity as the regressor with no intercept (Koyck.RelHumidity.NoIntercept) is the best.
+
+##### Diagnostic check for Koyck DLM (Residual analysis)
+
+```{r}
+checkresiduals(Koyck.RelHumidity.NoIntercept$model$residuals)
+```
+
+Serial autocorrelations left in residuals are insignificant as per Ljung-Box test and ACF plot. From the time series plot and histogram of residuals, there is an obvious random pattern and normality in the residual distribution. Thus, no violation in general assumptions.
+
+##### Conclusion of Koyck DLM model
+
+- Model with Relative Humidity as regressor with no intercept is best of all 4 regressors.
+- model is significant 
+- **MASE is 0.8702601**
+- Adjusted R-squared is 99.73 % 
+- No violations in the test of assumptions
+- Serial autocorrelation is insignificant
+- From the Weak Instruments line, the model at the first stage of the least-squares fitting is significant at 5% level of significance. 
+- both $\delta_2$ and $\delta_3$ are significant at 5% level meaning RBO is significantly dependent on Last years RBO and on the Relative Humidity
+- From the Wu-Hausman test, we **do not reject** the null hypothesis that the correlation between explanatory variable ($Y_{t-1}$) and the error term is zero (There is no endogeneity) at 5% level. 
+
+
+#### Fit Autoregressive Distributed Lag Model
+
+Autoregressive Distributed lag model is a flexible and parsimonious infinite DLM. The model is represented as, <br />
+
+$Y_t = \mu + \beta_0 X_t + \beta_1 X_{t-1} + \gamma_1 Y_{t-1} + e_t$ <br />
+
+Similar to the Koyck DLM, it is possible to write this model as an infinite DLM with infinite lag distribution of any shape rather than a polynomial or geometric shape. The model is denoted as ARDL(p,q). To fit the model we will use ardlDlm() function is used. Lets find the best lag length using AIC and BIC score through an iteration. Lets set max lag length to 14. Lets do this for each regressor individually. 
+
+##### 1. Temperature as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ Temperature, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+
+ARDL(2,13) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(2,13):** <br />
+
+```{r}
+ARDL.Temperature.2x13 = ardlDlm(formula = RBO ~ Temperature, data = RBO_dataset, p = 2, q = 13)
+summary(ARDL.Temperature.2x13)
+checkresiduals(ARDL.Temperature.2x13$model, test = "LB")
+MASE(ARDL.Temperature.2x13)
+```
+
+Model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ -1 + Temperature, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+
+ARDL(13,3) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(13,3):** <br />
+
+```{r}
+ARDL.Temperature.NoIntercept.13x3 = ardlDlm(formula = RBO ~ -1 + Temperature, data = RBO_dataset, p = 13, q = 3)
+summary(ARDL.Temperature.NoIntercept.13x3)
+checkresiduals(ARDL.Temperature.NoIntercept.13x3$model, test = "LB")
+MASE(ARDL.Temperature.NoIntercept.13x3)
+```
+
+Model is **significant** at 5% significance level.
+
+##### 2. Rainfall as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ Rainfall, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+ARDL(12,4) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(12,4):** <br />
+
+```{r}
+ARDL.Rainfall.12x4 = ardlDlm(formula = RBO ~ Rainfall, data = RBO_dataset, p = 12, q = 4)
+summary(ARDL.Rainfall.12x4)
+checkresiduals(ARDL.Rainfall.12x4$model, test = "LB")
+MASE(ARDL.Rainfall.12x4)
+```
+
+Model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ -1 + Rainfall, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+
+ARDL(7,11) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(7,11):** <br />
+
+```{r}
+ARDL.Rainfall.NoIntercept.7x11 = ardlDlm(formula = RBO ~ -1 + Rainfall, data = RBO_dataset, p = 7, q = 11)
+summary(ARDL.Rainfall.NoIntercept.7x11)
+checkresiduals(ARDL.Rainfall.NoIntercept.7x11$model, test = "LB")
+MASE(ARDL.Rainfall.NoIntercept.7x11)
+```
+
+Model is **significant** at 5% significance level.
+
+##### 3. Radiation as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ Radiation, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+
+ARDL(12,4) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(12,4):** <br />
+
+```{r}
+ARDL.Radiation.12x4 = ardlDlm(formula = RBO ~ Radiation, data = RBO_dataset, p = 12, q = 4)
+summary(ARDL.Radiation.12x4)
+checkresiduals(ARDL.Radiation.12x4$model, test = "LB")
+MASE(ARDL.Radiation.12x4)
+```
+
+Model is **significant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ -1 + Radiation, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+
+ARDL(10,9) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(10,9):** <br />
+
+```{r}
+ARDL.Radiation.NoIntercept.10x9 = ardlDlm(formula = RBO ~ -1 + Radiation, data = RBO_dataset, p = 10, q = 9)
+summary(ARDL.Radiation.NoIntercept.10x9)
+checkresiduals(ARDL.Radiation.NoIntercept.10x9$model, test = "LB")
+MASE(ARDL.Radiation.NoIntercept.10x9)
+```
+
+Model is **significant** at 5% significance level.
+
+##### 4. Relative Humidity as regressor
+
+**With intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ RelHumidity, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+
+ARDL(8,9) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(8,9):** <br />
+
+```{r}
+ARDL.RelHumidity.8x9 = ardlDlm(formula = RBO ~ RelHumidity, data = RBO_dataset, p = 8, q = 9)
+summary(ARDL.RelHumidity.8x9)
+checkresiduals(ARDL.RelHumidity.8x9$model, test = "LB")
+MASE(ARDL.RelHumidity.8x9)
+```
+
+Model is **insignificant** at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 196 ARDL (since max lag for response and predictor of ARDL model is 14, i.e, p = q = 14 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+# Also, models with AIC or BIC scores of inf or -inf are removed
+
+df = data.frame(matrix(
+  vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+  stringsAsFactors=F) # create empty dataframe
+for(i in 1:14){
+  for(j in 1:14){
+    model4.1 = ardlDlm(formula = RBO ~ -1 + RelHumidity, data = RBO_dataset, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per AIC
+head(df[order( df[,4] ),] %>% filter(, AIC != -Inf & BIC != -Inf),1) # Best model as per BIC
+```
+
+ARDL(14,1) is the best models as per AIC and BIC scores respectively. Lets fit this models, <br />
+
+**ARDL(14,1):** <br />
+
+```{r}
+ARDL.RelHumidity.NoIntercept.14x1 = ardlDlm(formula = RBO ~ -1 + RelHumidity, data = RBO_dataset, p = 14, q = 1)
+summary(ARDL.RelHumidity.NoIntercept.14x1)
+checkresiduals(ARDL.RelHumidity.NoIntercept.14x1$model, test = "LB")
+MASE(ARDL.RelHumidity.NoIntercept.14x1)
+```
+
+Model is **significant** at 5% significance level.
+
+##### ARDL Model selection
+
+ARDL models for Temperature, Rainfall and Relative Humidity regressors without intercept are significant. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("ARDL.Temperature.NoIntercept.13x3", "ARDL.Rainfall.NoIntercept.7x11", "ARDL.Radiation.12x4", "ARDL.Radiation.NoIntercept.10x9", "ARDL.RelHumidity.NoIntercept.14x1")
+AIC <- c(AIC(ARDL.Temperature.NoIntercept.13x3), AIC(ARDL.Rainfall.NoIntercept.7x11), AIC(ARDL.Radiation.12x4), AIC(ARDL.Radiation.NoIntercept.10x9), AIC(ARDL.RelHumidity.NoIntercept.14x1))
+BIC <- c( BIC(ARDL.Temperature.NoIntercept.13x3), BIC(ARDL.Rainfall.NoIntercept.7x11), BIC(ARDL.Radiation.12x4), BIC(ARDL.Radiation.NoIntercept.10x9), BIC(ARDL.RelHumidity.NoIntercept.14x1))
+Adjusted_Rsquared <- c(0.9999, 0.9998, 0.9987, 1, 0.9999)
+MASE <- MASE(ARDL.Temperature.NoIntercept.13x3, ARDL.Rainfall.NoIntercept.7x11, ARDL.Radiation.12x4, ARDL.Radiation.NoIntercept.10x9, ARDL.RelHumidity.NoIntercept.14x1)
+```
+
+```{r}
+data.frame(AIC, BIC, Adjusted_Rsquared, MASE) %>% arrange(MASE)
+```
+
+Thus, as per AIC, BIC, MASE (best in terms of forecasting), and Adjusted R-Squared, ARDL(12,4) model for RBO with Radiation as the regressor (ARDL.Radiation.12x4) is the best.
+
+##### Diagnostic check for ARDL (Residual analysis)
+
+```{r}
+checkresiduals(ARDL.Radiation.12x4$model$residuals)
+```
+
+**Serial autocorrelations** left in residuals are **insignificant** as per Ljung-Box test and ACF plot. From the time series plot and histogram of residuals, there is a random pattern and normality in the residual distribution. Thus, no violation in general assumptions.
+
+##### Conclusion of ARDL DLM model
+
+- Model Radiation as regressor is best of all 4 regressors.
+- ARDL.Radiation.12x4 model is significant 
+- **MASE is 0.006142636**
+- Adjusted R-squared is 99.87% 
+- No violations in the test of assumptions
+- Serial autocorrelation is insignificant
+
+
+#### Most appropriate DLM model based on MASE (DLM Model Selection)
+
+The 4 DLM models are, <br />
+
+- Finite DLM model: **DLM.RelHumidity.noIntercept**
+- Polynomial DLM model: No significant model
+- Koyck transformed geometric DLM model: **Koyck.RelHumidity.NoIntercept**
+- Autoregressive DLM model: **ARDL.Radiation.12x4**
+
+**mean absolute scaled errors** or **MASE** of these models are, <br />
+
+```{r}
+MASE(DLM.RelHumidity.noIntercept, Koyck.RelHumidity.NoIntercept, ARDL.Radiation.12x4) %>% arrange(MASE)
+```
+
+#### Conclusion of Distributed Lag models (DLM) modelling
+
+The Best DLM model for the RBO response which gives the most accurate forecasting based on the MASE measure is the Autoregressive DLM model having Radiation as regressor, **ARDL.Radiation.12x4** with MASE measure of 0.006142636. 
+
+
+### B. Dynamic linear models (dynlm package)
+
+Dynamic linear models are general class of time series regression models which can account for trends, seasonality, serial correlation between response and regressor variable, and **most importantly the affect of intervention points**.
+
+The response of a general Dynamic linear model is,  <br />
+
+$Y_t = \omega_2Y_{t-1} + (\omega_0 + \omega_1)P_t - \omega_2\omega_0P_{t-1} + N_t$ <br />
+
+where, <br />
+
+- $Y_t$ is the response 
+- $\omega_2$ is the coefficient of 1 time unit lagged response
+- $P_t$ is the current pulse affect at the intervention point with $(\omega_0 + \omega_1)$ coefficient representing the instantaneous effect of the intervention point 
+- $P_{t-1}$ is the past pulse affect with  $\omega_2\omega_0$ coefficient 
+- $N_t$ is the process represents the component where there is no intervention and is referred to as the natural or unperturbed process.
+
+Lets revisit the time series plot for the response, RBO, to visualize possible intervention points <br />
+
+```{r}
+plot(RBO, ylab='RBO', xlab='Year')
+```
+
+As mentioned at the descriptive analysis stage, **year 1996** might be intervention point because the mean level of the RBO series falls notably low from this point on wards. Assuming this intervention point lets fit a Dynamic Linear model and see if the pulse function at years 1996 is significant or not.
+
+As always we do, we will have a look at ACF and PACF plots of the RBO series first.
+
+```{r}
+acf(RBO, main="ACF of RBO")
+pacf(RBO, main ="PACF of RBO")
+```
+
+In ACF plot we see a slowly decaying pattern indicating trend in the RBO series. In PACF plot we see 1 high vertical spike indicating trend. No significant seasonal behavior is observed. Thus, lets fit a Dynamic linear model with trend component and no seasonal component. For thoroughness, lets test all possible combinations using trend, multiple lags of RBO, and most importantly, the Pulse at 1996.
+
+Now, lets fit Dynamic Linear model using dynlm() as shown below, (Note, the potential intervention point was identified at year 1996). Lets fit models with and without the intercept and compare,
+
+**With intercept :** <br />
+
+```{r}
+
+Y.t = RBO
+T = c(13) # The time point when the intervention occurred 
+P.t = 1*(seq(RBO) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model1 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model2 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model3 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Model <- c("Dyn.model", "Dyn.model1", "Dyn.model2", "Dyn.model3")
+AIC <- c(AIC(Dyn.model), AIC(Dyn.model1), AIC(Dyn.model2), AIC(Dyn.model3))
+BIC <- c( BIC(Dyn.model), BIC(Dyn.model1), BIC(Dyn.model2), BIC(Dyn.model3))
+data.frame(Model, AIC, BIC) %>% arrange(BIC)
+
+summary(Dyn.model)
+```
+
+
+As per BIC the best model Dynamic Linear model with intercept for RBO is the $Dyn.model$ having regressors, an instantaneous 1996 year affect, a 1 year lagged RBO response, and a trend component of RBO.
+
+From the summary statistics, the $Dyn.model$ is significant at 5% significance level. All the 3 regressors are significant. Most importantly, the pulse at 1996 year is significant at 5% significance level.
+
+**Without intercept :** <br />
+
+```{r}
+Y.t = RBO
+T = c(13) # The time point when the intervention occurred 
+P.t = 1*(seq(RBO) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model1.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + P.t + trend(Y.t))  # library(dynlm)
+
+Dyn.model2.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model3.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Model <- c("Dyn.model.NoIntercept", "Dyn.model1.NoIntercept", "Dyn.model2.NoIntercept", "Dyn.model3.NoIntercept")
+AIC <- c(AIC(Dyn.model.NoIntercept), AIC(Dyn.model1.NoIntercept), AIC(Dyn.model2.NoIntercept), AIC(Dyn.model3.NoIntercept))
+BIC <- c( BIC(Dyn.model.NoIntercept), BIC(Dyn.model1.NoIntercept), BIC(Dyn.model2.NoIntercept), BIC(Dyn.model3.NoIntercept))
+data.frame(Model, AIC, BIC) %>% arrange(BIC)
+
+summary(Dyn.model2.NoIntercept)
+```
+
+As per BIC the best model Dynamic Linear model without intercept for RBO is the $Dyn.model2.NoIntercept$ having regressors, an instantaneous 1996 year affect, 3 lagged RBO response, and a trend component of RBO.
+
+From the summary statistics, the $Dyn.model2.NoIntercept$ is significant at 5% significance level. 3 regressors are significant. Most importantly, the pulse at 1996 year is significant at 5% significance level.
+
+
+##### Dynamic Linear Model selection
+
+The best Dynamic Linear models with and without intercept were Dyn.model and Dyn.model.NoIntercept respectively. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("Dyn.model", "Dyn.model1.NoIntercept")
+AIC <- c(AIC(Dyn.model), AIC(Dyn.model2.NoIntercept))
+BIC <- c( BIC(Dyn.model), BIC(Dyn.model2.NoIntercept))
+Adjusted_Rsquared <- c(0.485, 0.9985)
+```
+
+```{r}
+data.frame(Model,AIC, BIC, Adjusted_Rsquared) %>% arrange(AIC)
+```
+
+Thus, as per AIC and BIC, Dynamic Linear model for RBO with intercept (Dyn.model) is the best.
+
+Dyn.model is the best Dynamic Linear model as per AIC and BIC with 1 lagged components of the response (RBO), a **significant pulse component at year 1996**, and trend component of RBO series. Lets look at the summary statistics and check residuals
+
+```{r}
+summary(Dyn.model)
+checkresiduals(Dyn.model)
+```
+
+**Summary of Dynamic linear model, Dyn.model.NoIntercept** <br />
+
+- model is significant at 5% significance level
+- Adjusted R-squared is 48.5% 
+- **No violations** in the test of assumptions
+- Serial autocorrelations are insignificant
+
+##### Conclusion of Dynamic Linear model
+
+The dynamic linear model, **Dyn.model, is significant** and the **pulse (P.t) component significant** at year 1996.
+
+
+### Overall Most Appropriate Regression model (Model Selection)
+
+Based on the 4 Time series regression methods considered, the best model as per MASE measure for each method is summarized below, <br />
+
+- A. Best Distributed lag models is - Autoregressive DLM model having Radiation as regressor ***ARDL.Radiation.12x4*** with MASE measure of 0.006142636, AIC of -231.3149, BIC of -213.3706 and Adjusted R-squared of 99.87%.
+
+- B. Best Dynamic linear models is - ***Dyn.model*** having 1 lagged components of the response (RBO), a significant pulse component at years 1996, and trend component with AIC of -114.7932, BIC of -107.7873 and Adjusted R-squared of 48.5%.
+
+Clearly, the best model is ***ARDL.Radiation.12x4*** as per AIC, BIC and Adjusted R-squared measures.
+
+### Best Time Series regression model for Forecasting
+
+Best Time Series regression model is - **Autoregressive DLM model having Radiation as regressor (ARDL.Radiation.12x4)**
+
+
+## Detailed Graphical and statistical tests of assumptions for $ARDL.Radiation.12x4$ model (Residual Analysis)
+
+Residual analysis to test model assumptions. <br />
+
+Lets perform a detailed ***Residual Analysis*** to check if any model assumptions have been violated. 
+
+The estimator error (or residual) is defined by: <br />
+
+$\hat{\epsilon_i}$ = $Y_i$ - $\hat{Y_i}$ (i.e. observed value less -
+trend value)
+
+The following problems are to be checked,
+
+  1. linearity in distribution of error terms
+  2. The mean value of residuals is zero 
+  3. Serial autocorrelation
+  4. Normality of distribution of error terms
+
+Lets first apply diagnostic check using checkresiduals() function, 
+
+``` {r}
+checkresiduals(ARDL.Radiation.12x4)
+```
+
+1. From the Residuals plot, linearity is not violated as the residuals are randomly distributed across the mean. Thus, **linearity in distribution of error terms is not violated**
+
+2. To test mean value of residuals is zero or not, lets calculate mean value of residuals as,
+
+```{r}
+mean(ARDL.Radiation.12x4$model$residuals)
+```
+
+As mean value of residuals is close to 0, **zero mean residuals is not violated**.
+
+3. In the checkresiduals output, the Ljung-Box test output is displayed. According to this test, the hypothesis are,
+
+Which has, <br />
+$H_0$ : series of residuals exhibit no serial autocorrelation of any order up to p <br />
+$H_a$ : series of residuals exhibit serial autocorrelation of any order up to p <br />
+
+From the Ljung-Box test output, since p (0.1405) > 0.05, we do not reject the null hypothesis of no serial autocorrelation. 
+
+Thus, according to this test and ACF plot, we can conclude that the **serial correlation left in residuals is insignificant**.
+
+4. From the histogram shown by checkresiduals(), residuals seem to follow normality. Lets test this statistically,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(ARDL.Radiation.12x4$model$residuals)
+```
+
+From the Shapiro-Wilk test, since p>0.05 significance level, we do reject the null hypothesis that states the data is normal. Thus, residuals of ARDL.Radiation.12x4 model are **normally** distributed.
+
+**Summarizing residual analysis on $ARDL.Radiation.12x4$ model:**
+
+Assumption 1: The error terms are randomly distributed and thus show linearity: ***Not violated*** <br /> 
+Assumption 2: The mean value of E is zero (zero mean residuals): ***Not violated*** <br /> 
+Assumption 4: The error terms are independently distributed, i.e. they are not autocorrelated: ***Not violated*** <br /> 
+Assumption 5: The errors are normally distributed. **Not violated** <br /> 
+
+Having no residual assumptions' violations, the Finite DLM model having Relative humidity as regressor without an intercept (ARDL.Radiation.12x4) model is good for accurate forecasting. Lets forecast for the next 3 years,
+
+
+## Forecasting
+
+Using MASE measure, ARDL model, $ARDL.Radiation.12x4$ is best fitted model to forecast RBO. Lets estimate and plot 3 years (2015-2017) ahead forecasts for RBO series.
+
+Observed and fitted values are plotted below. This plot indicates a good agreement between the model and the original series. (Note, since lag is set as 16 (q=4 + p=12), fitted values are not available for the first 16 years)
+
+```{r}
+plot(RBO, ylab='RBO', xlab = 'Year', type="l", col="black", main="Observed and fitted values using ARDL.Radiation.12x4 model on RBO")
+lines(ts(ARDL.Radiation.12x4$model$fitted.values, start = c(1996)), col="red")
+legend("topleft",lty=1,
+       col=c("black", "red"), 
+       c("RBO series", "ARDL.Radiation.12x4 fit"))
+```
+
+Using the given 4 years ahead future covariates values, we can forecast our RBO response.
+
+```{r}
+Future_Covariates_RBO <- read.csv("C:/Users/admin/Downloads/Covariate x-values for Task 3.csv")
+head(Future_Covariates_RBO)
+```
+
+Our ARDL.Radiation.12x4 model uses only 1 covariate, Radiation. 4 years ahead point forecasts of RBO using Radiation covariate is,
+
+```{r}
+ARDL.Radiation.12x4 = ardlDlm(formula = RBO ~ Radiation, data = RBO_dataset, p = 12, q = 4)
+x.new =  c(Future_Covariates_RBO$Radiation)
+forecasts.ardldlm = dLagM::forecast(model = ARDL.Radiation.12x4, x = x.new, h = 3)$forecasts
+```
+
+
+**Forecast using overall best fitting model:** <br />
+
+The point forecasts and the forecast plot using the overall best fitting model, ARDL.Radiation.12x4 is given below,
+
+```{r}
+df <- data.frame(
+  ARDL_forecasts = c(forecasts.ardldlm)
+) 
+row.names(df) <- c("2015", "2016", "2017")
+df
+
+RBO.extended4 = c(RBO, forecasts.ardldlm)
+
+{
+plot(ts(RBO.extended4, start = c(1984)), type="l", col = "red",
+ylab = "RBO", xlab = "Year", 
+main="3 years ahead forecasts for RBO series
+      using ARDL.Radiation.12x4 model")          
+lines(RBO,col="black",type="l")
+legend("topleft",lty=1,
+       col=c("black", "red"), 
+       c("RBO series", "ARDL(12,4) forecasts"))
+}
+```
+
+The forecasts for best Finite DLM, Koyck, and Dynamic Linear model are plotted and given below, (Note, no significant Polynomial DLM were found and since the best Finite and Koyck models do not have intercepts, their forecasts aren't printed). Since there is only one Distributed Lag model, ARDL, which is already plotted above, lets move on to Dynamic Linear models,
+
+**For Dynamic Linear model:** <br />
+
+The 3 years ahead point forecasts are printed and plotted below, 
+
+```{r}
+Dyn.model = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + trend(Y.t)) # library(dynlm)
+
+q = 3
+n = nrow(Dyn.model$model)
+RBO.frc = array(NA , (n + q))
+RBO.frc[1:n] = Y.t[2:length(Y.t)] # length(1:n) = length(2:length(Y.t)) = 30
+trend = array(NA,q)
+trend.start = Dyn.model$model[n,"trend(Y.t)"]
+trend = seq(trend.start , trend.start + q/1, 1)
+
+for (i in 1:q){
+  #months = array(0,11)
+  #months[(i+4)%%12] = 1 # Data ends in May, to start the new forecast from JUNE, put i + 4.
+  data.new = c(1,RBO.frc[n-1+i], P.t[n] ,trend[i]) 
+  RBO.frc[n+i] = as.vector(Dyn.model$coefficients) %*% data.new
+}
+
+par(mfrow=c(1,1))
+
+plot(Y.t,xlim=c(1984,2017),ylab='RBO',xlab='Year',main = "Time series plot of RBO series with 3 years ahead forecasts (in red)")
+lines(ts(RBO.frc[(n+1):(n+q)],start=c(2015)),col="red")
+
+```
+
+## Conclusion
+
+The most fitting model for our RBO series in terms of MASE which assesses the forecast accuracy is the Autoregressive DLM model, ARDL(12,4) with Radiation as regressor $ARDL.Radiation.12x4$. The point forecasts for 3 years ahead reported using the forecast() of dLagM package are 0.6710744, 0.8016781, and 0.7241307 respectively (Confidence Intervals are not outputted).
+
+## Future Directions
+
+Potentially better forecasting methods can be explored, compared and diagnosed for better fit.
+
+
+# Task 3 Part (b): Intervention Analysis for Rank-Based Flowering Order Similarity Metric: Accounting for the Millennium Drought
+
+## Objective
+
+To accommodate the affect of the Millennium Drought, which occurred during 1996-2009 period, in the analysis of Rank-based flowering Order similarity metric (RBO) based on the 4 climatic regressor variables and obtain the 3 year ahead forecasts.
+
+## Intervention Analysis
+
+We expect the Millennium Drought from 1996-2009 to have created an intervention point which changes the mean function or trend of the RBO series. Lets revisit the time series plot for the response, RBO, to visualize possible intervention points at 1996 and 2009 or between these years. <br />
+
+```{r}
+plot(RBO, ylab = 'RBO', xlab = 'Year')
+```
+
+From the time series plot above, **year 1996** might be an intervention point because the mean level of the RBO series falls notably low from this point on wards. Assuming this intervention point lets fit a Dynamic Linear model and see if the pulse function at years 1996 is significant or not.
+
+To analyze the affect of this potential intervention point, Dynamic Linear Regression model can be used. Dynamic linear models are general class of time series regression models which can account for trends, seasonality, serial correlation between response and regressor variable, and **most importantly the affect of intervention points**.
+
+The response of a general Dynamic linear model is,  <br />
+
+$Y_t = \omega_2Y_{t-1} + (\omega_0 + \omega_1)P_t - \omega_2\omega_0P_{t-1} + N_t$ <br />
+
+where, <br />
+
+- $Y_t$ is the response 
+- $\omega_2$ is the coefficient of 1 time unit lagged response
+- $P_t$ is the current pulse affect at the intervention point with $(\omega_0 + \omega_1)$ coefficient representing the instantaneous effect of the intervention point 
+- $P_{t-1}$ is the past pulse affect with  $\omega_2\omega_0$ coefficient 
+- $N_t$ is the process represents the component where there is no intervention and is referred to as the natural or unperturbed process.
+
+As always we do, we will have a look at ACF and PACF plots of the RBO series first.
+
+```{r}
+acf(RBO, main="ACF of RBO")
+pacf(RBO, main ="PACF of RBO")
+```
+In ACF plot we see a slowly decaying pattern indicating trend in the RBO series. In PACF plot we see 1 high vertical spike indicating trend. No significant seasonal behavior is observed. Thus, lets fit a Dynamic linear model with trend component and no seasonal component. For thoroughness, lets test all possible combinations using trend, multiple lags of RBO, and most importantly, the Pulse at 1996.
+
+Now, lets fit Dynamic Linear model using dynlm() as shown below, (Note, the potential intervention point was identified at year 1996, i.e the 13th data point). Lets fit models with and without the intercept and compare,
+
+**With intercept :** <br />
+
+```{r}
+
+Y.t = RBO
+T = c(13) # The time point when the intervention occurred 
+P.t = 1*(seq(RBO) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model1 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model2 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model3 = dynlm(Y.t ~ L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Model <- c("Dyn.model", "Dyn.model1", "Dyn.model2", "Dyn.model3")
+AIC <- c(AIC(Dyn.model), AIC(Dyn.model1), AIC(Dyn.model2), AIC(Dyn.model3))
+BIC <- c( BIC(Dyn.model), BIC(Dyn.model1), BIC(Dyn.model2), BIC(Dyn.model3))
+data.frame(Model, AIC, BIC) %>% arrange(BIC)
+
+summary(Dyn.model)
+```
+
+
+As per BIC the best model Dynamic Linear model with intercept for RBO is the $Dyn.model$ having regressors, an instantaneous 1996 year affect, a 1 year lagged RBO response, and a trend component of RBO.
+
+From the summary statistics, the $Dyn.model$ is significant at 5% significance level. All the 3 regressors are significant. Most importantly, the pulse at 1996 year is significant at 5% significance level.
+
+
+**Without intercept :** <br />
+
+```{r}
+Y.t = RBO
+T = c(13) # The time point when the intervention occurred 
+P.t = 1*(seq(RBO) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model1.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + P.t + trend(Y.t))  # library(dynlm)
+
+Dyn.model2.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + trend(Y.t)) # library(dynlm)
+
+Dyn.model3.NoIntercept = dynlm(Y.t ~ 0 + L(Y.t , k = 1) + L(Y.t , k = 2) + L(Y.t , k = 3) + P.t + P.t.1 + trend(Y.t)) # library(dynlm)
+
+Model <- c("Dyn.model.NoIntercept", "Dyn.model1.NoIntercept", "Dyn.model2.NoIntercept", "Dyn.model3.NoIntercept")
+AIC <- c(AIC(Dyn.model.NoIntercept), AIC(Dyn.model1.NoIntercept), AIC(Dyn.model2.NoIntercept), AIC(Dyn.model3.NoIntercept))
+BIC <- c( BIC(Dyn.model.NoIntercept), BIC(Dyn.model1.NoIntercept), BIC(Dyn.model2.NoIntercept), BIC(Dyn.model3.NoIntercept))
+data.frame(Model, AIC, BIC) %>% arrange(BIC)
+
+summary(Dyn.model2.NoIntercept)
+```
+
+As per BIC the best model Dynamic Linear model without intercept for RBO is the $Dyn.model2.NoIntercept$ having regressors, an instantaneous 1996 year affect, 3 lagged RBO response, and a trend component of RBO.
+
+From the summary statistics, the $Dyn.model2.NoIntercept$ is significant at 5% significance level. 3 regressors are significant. Most importantly, the pulse at 1996 year is significant at 5% significance level.
+
+
+## Model selection
+
+The best Dynamic Linear models with and without intercept were Dyn.model and Dyn.model.NoIntercept respectively. Eliminating all the insignificant models and comparing the significant Finite DLM models based on R-squared, AIC, BIC and MASE
+
+```{r, results='hide'}
+Model <- c("Dyn.model", "Dyn.model1.NoIntercept")
+AIC <- c(AIC(Dyn.model), AIC(Dyn.model2.NoIntercept))
+BIC <- c( BIC(Dyn.model), BIC(Dyn.model2.NoIntercept))
+Adjusted_Rsquared <- c(0.485, 0.9985)
+```
+
+```{r}
+data.frame(Model,AIC, BIC, Adjusted_Rsquared) %>% arrange(AIC)
+```
+
+Thus, as per AIC and BIC, Dynamic Linear model for RBO with intercept (Dyn.model) is the best.
+
+Dyn.model is the best Dynamic Linear model as per AIC and BIC with 1 lagged components of the response (RBO), a **significant pulse component at year 1996**, and trend component of RBO series. Lets look at the summary statistics and check residuals
+
+```{r}
+summary(Dyn.model)
+checkresiduals(Dyn.model)
+```
+
+**Summary of Dynamic linear model, Dyn.model.NoIntercept** <br />
+
+- model is significant at 5% significance level
+- Adjusted R-squared is 48.5% 
+- **No violations** in the test of assumptions
+- Serial autocorrelations are insignificant
+
+## Conclusion of Dynamic Linear model
+
+The dynamic linear model, **Dyn.model, is significant** and the **pulse (P.t) component significant** at year 1996.
+
+Observed and fitted values are plotted below. This plot indicates a decent agreement between the model and the original series.
+
+```{r}
+plot(RBO,ylab='RBO', xlab = 'Year', type="l", col="red")
+lines(Dyn.model$fitted.values)
+```
+
+## forecasting 
+
+Now, let’s find 3 years ahead point forecasts for RBO series using the Dyn.model.
+
+```{r}
+Dyn.model = dynlm(Y.t ~ L(Y.t , k = 1) + P.t + trend(Y.t)) # library(dynlm)
+
+q = 3
+n = nrow(Dyn.model$model)
+RBO.frc = array(NA , (n + q))
+RBO.frc[1:n] = Y.t[2:length(Y.t)] # length(1:n) = length(2:length(Y.t)) = 30
+trend = array(NA,q)
+trend.start = Dyn.model$model[n,"trend(Y.t)"]
+trend = seq(trend.start , trend.start + q/1, 1)
+
+for (i in 1:q){
+  #months = array(0,11)
+  #months[(i+4)%%12] = 1 # Data ends in May, to start the new forecast from JUNE, put i + 4.
+  data.new = c(1,RBO.frc[n-1+i], P.t[n] ,trend[i]) 
+  RBO.frc[n+i] = as.vector(Dyn.model$coefficients) %*% data.new
+}
+
+par(mfrow=c(1,1))
+
+plot(Y.t,xlim=c(1984,2017),ylab='RBO',xlab='Year',main = "Time series plot of RBO series with 3 years ahead forecasts (in red)")
+lines(ts(RBO.frc[(n+1):(n+q)],start=c(2015)),col="red")
+
+```
+
+## Future Directions
+
+Data can be collected at monthly level which would allow more precise forecasting.
