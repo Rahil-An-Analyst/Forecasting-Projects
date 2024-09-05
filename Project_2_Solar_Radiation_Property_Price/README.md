@@ -1,7 +1,8 @@
 # Project 2: Forecasting Solar Radiation and Investigating Correlation in Property Prices
 
 ## Report
-- (https://rpubs.com/rahil1998/1216693)
+View report here - 
+(https://rpubs.com/rahil1998/1216693)
 
 
 ## Overview
