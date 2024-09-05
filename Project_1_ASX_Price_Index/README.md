@@ -1,5 +1,9 @@
 # Project 1: Evaluating the Best Regression Model for Forecasting ASX Price Index
 
+## Report
+Directly view report here -
+(https://rpubs.com/rahil1998/1216686)
+
 ## Overview
 This project aims to determine the most accurate regression model for forecasting the ASX Price Index using various regressors.
 
@@ -33,10 +37,6 @@ The best fitting model is the Autoregressive Distributed Lag (ADRL(12,4)) model 
 - `Forecasting  - Project 1.Rmd`: The R Markdown file with code and analysis.
 - `Forecasting_ Project 1.html`: The HTML report of the analysis.
 - `ASX_data.csv`: The dataset used for forecasting.
-
-## Report
-Directly view report here -
-(https://rpubs.com/rahil1998/1216686)
 
 ## License
 This project is licensed under the MIT License.
