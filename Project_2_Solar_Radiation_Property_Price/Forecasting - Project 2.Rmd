@@ -1,0 +1,1300 @@
+---
+title: "Forecasting: Project 2"
+subtitle: "Forecasting Solar Radiation and Investigating Correlation in Property Prices: A Two-Part Analytical Study"
+author: "Shaikh Mohammad Rahil"
+date: "`26-09-2023`"
+output: 
+  html_document: 
+    toc: true
+  pdf_document: default
+toc-title: "Table of Contents"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(GGally) # for ggpairs()
+library(TSA) # season(), prewhiten() and other functions
+library(tseries) # adf.test()
+library(forecast) # BoxCox.lambda()
+library(dLagM) # For DLM modelling
+library(car) # for vif()
+library(tis) # for Lag()
+library(dynlm) # for Dynamic linear modeling
+library(stats) # for classical decomposition
+library(x12) # X-12-ARIMA decomposition
+library(lmtest) # for bgtest()
+```
+
+#### General note:
+
+A significance level $\alpha=5\%$ is used.
+
+# TASK 1: Two-Year Ahead Forecasting of Solar Radiation Using Time Series Regression and Exponential Smoothing Models
+
+## Data Description
+
+The dataset hold 2 columns and 660 observations. They are, monthly averages of horizontal solar radiation and precipitation measured at the same points between January 1960 and December 2014.
+
+## Objective
+
+Our aim for the dataset is to give best 2 years ahead forecasts by determining the most accurate and suitable regression model that determines the monthly Solar radiation in terms of MASE. A descriptive analysis will be conducted initially. Model-building strategy will be applied to find the best fitting model from the time series regression methods (dLagM package), dynamic linear models (dynlm package), and exponential smoothing and corresponding state-space models.
+
+## Model Selection Criteria (MASE) 
+
+Out of various different error measures to assess the forecast accuracy, Mean absolute scaled error (MASE) is a generally applicable measure of forecast accuracy and is obtained by scaling the errors based on the in-sample MAE from the naive forecast method. It is the only available method which can be used in all circumstances and can be used to compare forecast accuracy between series as it is scale-free. 
+
+
+## Read Data
+
+```{r}
+solar_precipitation <- read.csv("C:/Users/admin/Downloads/data1.csv")
+head(solar_precipitation)
+```
+
+
+## Identification of the response and the regressor variables
+
+For fitting a regression model, the response is the monthly solar radiation ($solar$) and the regressor variable is the monthly precipitation ($precipitation$).
+
+- y = monthly solar radiation = $solar$
+- x = monthly precipitation = $precipitation$
+
+Both variables are continuous variables.
+
+
+### Read Regressor and Response variables
+
+Lets first get the regressor and response as TS objects,
+
+```{r}
+solar = ts(solar_precipitation[,1], start=c(1960,1),frequency = 12)
+precipitation = ts(solar_precipitation[,2], start=c(1960,1),frequency = 12)
+data.ts = ts(solar_precipitation, start = c(1960,1), frequency = 12) # Y and x in single dataframe
+```
+
+
+## Relationship between Regressor and Response variables
+
+Lets scale, center and plot the 2 variables together,
+
+```{r}
+data.scale = scale(data.ts)
+plot(data.scale, plot.type="s", col=c("blue", "green"), main = "Monthly solar radiation and precipitation (Blue - Response and Green - regressor)")
+```
+
+It is hard to read the correlations between the regressor and the response. But it is fair to say the 2 variables show some correlations. Lets check for correlation statistically using ggpairs(),
+
+```{r}
+ggpairs(data = solar_precipitation, columns = c(1,2), progress = FALSE) #library(ggally)
+```
+
+As shown in the matrix above, the response $Solar radiation$ and regressor $monthly precipitation$ are **correlated by -0.454** correlation coefficient. We can generate regression model based on this correlation. First, lets look at the descriptive statistics
+
+
+## Descriptive Analysis
+
+Since we are generating regression model which estimates the response, **$SolarRadiation$**, lets focus on Solar radiation’s statistics
+
+#### Summary statistics
+
+```{r}
+summary(solar)
+```
+
+The mean and median of the Solar radiation are very close indicating symmetrical distribution.
+
+#### Time Series plot:
+
+The time series plot for our data is generated using the following code chunk,
+
+```{r}
+plot(solar,ylab='Monthly solar radiation reaching ground',xlab='Year',
+     main = "Time series plot of the monthly solar radiation reaching ground")
+points(y=solar,x=time(solar), pch=as.vector(season(solar)), col=rainbow(12))
+```
+
+**Plot Inference :** <br />
+
+From the plot, we can comment on the time series’s,
+
+- **Trend:** The overall shape of the trend seems to be flat. Thus, indicating stationarity.
+
+- **Seasonality:** From the plot, seasonal behavior is quite evident every year. This needs to be confirmed using statistical tests.
+
+- **Change in Variance:** A change in variance can be seen as the variation is much higher during the earlier years than the latter.
+
+- **Behavior:** We notice mixed behavior of MA and AR series. AR behavior is dominant as we obverse more following data points. MA behavior is evident due to up and down fluctuations in the data points.
+
+- **Intervention/Change points:** No particular intervention point is noticed. This needs to be confirmed using statistical tests. Note, peak values seen in the plot (1998 July for example) are not intervention points as the mean solar radiation before and after (even after a long period) does not change. Maybe, 2013 January might be an intervention point as the variance of the series decreases drastically from this point. We need to check this by fitting a Dynamic Linear model and check if the pulse at 2013 January is significant or not.
+
+#### ACF and PACF plots:
+
+```{r}
+par(mfrow=c(2,1))
+acf(solar, main="ACF of solar radiation")
+pacf(solar, main ="PACF of solar radiation")
+par(mfrow=c(1,1))
+```
+
+- **ACF plot:** We notice multiple autocorrelations are significant. We see a wave pattern. Thus, **seasonal behavior is observed**. We observed seasonality in time series plot as well.
+
+- **PACF plot:** We see 1 high vertical spike indicating **non stationary** series. Also, the second correlation bar is significant as well.
+
+#### Check normality
+
+Many model estimating procedures assume normality of the residuals. If this assumption doesn’t hold, then the coefficient estimates are not optimum. Lets look at the Quantile-Quantile (QQ) plot to to observe normality visually and the Shapiro-Wilk test to statistically confirm the result.
+
+```{r}
+qqnorm(solar, main = "Normal Q-Q Plot of Solar Radiation Time Series")
+qqline(solar, col = 2)
+```
+
+
+We see deviations from normality. Clearly, both the tails are off and most of the data in middle is off the line as well. Lets check statistically using shapiro-wilk test. Lets state the hypothesis of this test,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(solar)
+```
+
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, solar radiation series is **not normally** distributed.
+
+#### Test Stationarity
+
+The PACF plot of Solar radiation the time series at the descriptive analysis stage of time series tells us nonstationarity in our time series. Lets use ADF and PP tests,
+
+**Using ADF (Augmented Dickey-Fuller) test :** <br />
+  
+Lets confirm the non-stationarity using Dickey-Fuller Test or ADF test. Lets state the hypothesis, <br />
+
+$H_0$ : Time series is Difference non-stationary <br />
+$H_a$ : Time series is Stationary
+
+```{r}
+adf.test(solar) #library(tseries)
+```
+
+since p-value < 0.05, we reject null hypothesis of non stationarity. we can conclude that the **series is stationary** at 5% level of significance.
+
+**Using PP (Phillips-Perron) test :** <br />
+
+The null and alternate hypothesis are same as ADF test.
+
+```{r}
+PP.test(solar)
+```
+
+According to the PP tests, solar radiation series is **stationary** at 5% level
+
+#### Conclusion from descriptive analysis:
+
+- From the time series plot, ACF plot, ADF and PP tests, we found our ASX Price Index response **is stationary**. **Differencing is not required**.
+- Trend is **not normal**. Thus **Box-cox transformation is required**.
+
+Lets perform with Box-Cox transformation,
+
+## Transformations
+
+#### Box-Cox transformation to improve normality 
+
+To improve normality in our Solar Radiation time series, lets test Box-Cox transformations on the series
+
+```{r}
+lambda = BoxCox.lambda(solar, method = "loglik") # library(forecast)
+BC.solar = BoxCox(solar, lambda = lambda)
+```
+
+#### Check Normality of BC transformed Solar Radiation series
+
+Visually comparing the time series plots before and after box-cox transformation,
+
+```{r}
+par(mfrow=c(2,1))
+plot(BC.solar,ylab='Monthly Solar Radiation',xlab='Time',
+     type='o', main="Box-Cox Transformed Solar Radiation Time Series")
+points(y=BC.solar,x=time(BC.solar))
+plot(solar,ylab='ASX Price Index',xlab='Time',
+     type='o', main="Original Solar Radiation Time Series")
+points(y=solar,x=time(solar))
+par(mfrow=c(1,1))
+```
+
+From the plot, almost no improvement in the variance of the time series is visible after BC transformation. Lets check for normality using shapiro test,
+
+```{r}
+shapiro.test(BC.solar)
+```
+
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, **BC Transformed Solar radiation is not normal**.
+
+#### Conclusion after BC transformation
+
+The BC transformed Solar radiation series is Stationary and not normal. **BC transformation was not effective**.
+
+
+## Decomposition
+
+To observe the individual effects of the existing components and historical effects occurred in the past, lets perform decomposition of the Solar Radiation time series. The time series can be decomposed into are seasonal, trend and remainder components.
+
+Three main decomposition methods for time series are known, classical decomposition, X-12-ARIMA decomposition and Loess (STL) decomposition.
+
+#### Classical decomposition
+
+To implement the classical decomposition, we use decompose() function from the stats package. 
+
+```{r}
+fit.classical.add <- decompose(solar, type="additive")
+plot(fit.classical.add)
+
+fit.classical.mult <- decompose(solar, type="multiplicative")
+plot(fit.classical.mult)
+```
+
+Notice that a trend component was extracted from the series which wasn't identified during the descriptive analysis stage. We got very similar estimates from the additive and multiplicative methods. It seems from the remainder series that the additive model handles the decomposition slightly better (mean much closer to zero). This hints that our final model would have **additive components rather than multiplicative as per classical decomposition** for our Solar Radiation series.
+
+#### X-12-ARIMA decomposition
+
+Although using the classical decomposition, a trend component was identified, we do not know how significant this trend effect is. X-12-ARIMA decomposition can help us detect the significance of the trend component. We use the function x12() to implement the X-12-ARIMA decomposition. 
+
+```{r}
+fit.x12 = x12(solar)
+plot(fit.x12 , sa=TRUE , trend=TRUE)
+```
+From the plot, we can see the Seasonally Adjusted series does not follow the original series closely. This implies, that the original series is affected by seasonality a lot, meaning seasonality is highly significant in the Solar Radiation series. On the contrary, the Trend series does not deviate a lot from the original series (especially at the ups and downs), implying the Original series has not so significant trend component.
+
+#### STL decomposition
+
+Another decomposition method, STL has advantage of flexibility over classical decomposition. stl() function is used with t.window and s.window arguments to control rate of change of trend and seasonal components. Lets set t.window to 15 and look the STL decomposed plots,
+
+We can adjust the series for seasonality by subtracting the seasonal component from the original series using the following code chunk,
+
+```{r}
+# Code gist - Apply STL decomposition to get seasonally adjusted and trend adjusted and visually compare w.r.t to original time series
+
+stl.solar <- stl(window(solar,start=c(1960,1)), t.window=15, s.window="periodic", robust=TRUE)
+
+par(mfrow=c(3,1))
+
+plot(seasadj(stl.solar), ylab='Solar Radiation',xlab='Time', main = "Seasonally adjusted Solar Radiation")
+points(y=seasadj(stl.solar),x=time(seasadj(stl.solar)), pch=as.vector(season(seasadj(stl.solar))))
+
+plot(solar,ylab='Solar Radiation',xlab='Time',
+     type='o', main="Original Solar Radiation Time Series")
+points(y=solar,x=time(solar), pch=as.vector(season(solar)))
+
+stl.solar.trend = stl.solar$time.series[,"trend"] # Extract the trend component from the output
+stl.solar.trend.adjusted = solar - stl.solar.trend
+
+plot(stl.solar.trend.adjusted, ylab='Solar Radiation',xlab='Time', main = "Trend adjusted Solar Radiation")
+points(y=stl.solar.trend.adjusted,x=time(stl.solar.trend.adjusted), pch=as.vector(season(stl.solar.trend.adjusted)))
+
+par(mfrow=c(1,1))
+
+```
+The Seasonally adjusted series is completely different from the original series, implying the Seasonal component of the series is the most influential component of the original series. No change is visually seen in the trend adjusted series compared to the original series. Thus, trend component is insignificant.
+
+#### Conclusion of Decomposition
+
+**Trend component is insignificant** when comparing trend adjusted series with the original series. The **seasonal component** of the series **is the most influential component** of the original series.
+
+
+## Modeling
+
+Time series regression methods namely, <br />
+
+- A. Distributed lag models (dLagM package), 
+- B. Dynamic linear models (dynlm package)
+- C. Exponential smoothing,
+- D. and corresponding state-space models will be considered.
+
+### A. Distributed lag models 
+
+Based on whether the lags are known (Finite DLM) or undetermined (Infinite DLM), 4 major modelling methods will be tested, namely,
+
+- Basic Finite Distributed lag model,
+- Polynomial DLM,
+- Koyck transformed geometric DLM,
+- and Autoregressive DLM.
+
+
+#### Fit Finite DLM 
+
+The response of a finite DLM model with 1 regressor is represented as shown below, <br />
+
+$Y_t = \alpha + \sum_{s=0}^{q} \beta_s X_{t-s} + \epsilon_t$ <br />
+  
+where, <br />
+
+- $\alpha$ is intercept
+- $\beta_s$ is coefficient of s lagged response $X_t$ 
+- and $\epsilon_t$ is the error term
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = solar ~ ppt, data = solar_precipitation, q.min = 1, q.max = 12,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 12 has the smallest AIC and BIC scores. Fit model with q = 12, <br />
+
+```{r}
+DLM.model = dlm(formula = solar ~ ppt, data = solar_precipitation, q = 12)
+```
+
+**Note** - We are using solar and not the BC.solar (BC transformed solar radiation series) as normality is violated in both of these.
+
+**Diagnostic check for DLM.model (Residual analysis): ** <br />
+
+We can apply a diagnostic check using checkresiduals() function from the forecast package.
+
+```{r}
+checkresiduals(DLM.model$model$residuals) # forecast package
+```
+
+In this output, <br />
+
+- from the time series plot and histogram of residuals, there is an obvious non-random pattern and very high residual values that violate general assumptions.
+- the Ljung-Box test output is displayed. According to this test, the null hypothesis that a series of residuals exhibits no autocorrelation up-to lag 10 is violated. According to this test and ACF plot, we can conclude that the **serial correlation left in residuals is highly significant.**
+
+**Model Summary for Finite DLM model (DLM.model) :** <br />
+
+```{r}
+summary(DLM.model)
+```
+
+- Finite DLM model is significant
+- R-squared is 32.16%, Adjusted R-squared is 30.77%
+
+Lets consider the effect of collinearity on these results. To inspect this issue, we will display variance inflation factors (VIFs). If the value of VIF is greater than 10, we can conclude that the effect of multicollinearity is high.
+
+```{r}
+vif(DLM.model$model) # variance inflation factors #library(car)
+```
+
+- Multicollinearity is insignificant.
+
+```{r}
+MASE(DLM.model)
+```
+
+##### Conclusion of Finite DLM model
+
+- Model is significant.
+- **MASE is 1.5516**
+- Low R-squared value of 32.16% suggests bad fit. Adjusted R-squared is 30.77%.
+- violations in the test of assumptions
+- Serial autocorrelation is significant
+- Multicollinearity is insignificant.
+
+**ATTENTION** - Lets summarise the models from here on and not go into each models details for simplicity <br />
+
+
+#### Fit Polynomial DLM model
+
+Polynomial DLM model helps remove the effect of multicollinearity, but our data has insignificant multicollinearity. lets fit polynomial DLM model of order 2 anyways,
+
+```{r}
+PolyDLM = polyDlm(x = as.vector(precipitation), y = as.vector(solar), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM)
+checkresiduals(PolyDLM$model$residuals)
+MASE(PolyDLM)
+```
+
+##### Conclusion of Polynomial DLM model
+
+- model is significant 
+- **MASE is higher 1.563035 (vs 1.5516)**
+- Adjusted R-squared improved to 30.87% (vs 30.77)
+- violations in the test of assumptions
+- Serial autocorrelation is significant
+- Multicollinearity is insignificant.
+
+
+#### Fit Koyck geometric DLM model
+
+Here the lag weights are positive and decline geometrically. This model is called infinite geometric DLM, meaning there are infinite lag weights. Koyck transformation is applied to implement this infinite geometric DLM model by subtracting the first lag of geometric DLM multiplied by $\phi$. The Koyck transformed model is represented as, <br />
+  
+$Y_t = \delta_1 + \delta_2Y_{t-1} + \nu_t$ <br />
+
+where $\delta_1 = \alpha(1-\phi), \delta_2 = \phi, \delta_3 = \beta$ and the random error after the transformation is $\nu_t = (\epsilon_t -\phi\epsilon_{t-1})$. <br />
+
+The koyckDlm() function is used to implement a two-staged least squares method to first estimate the $\hat{Y}_{t-1}$ and the estimate $Y_{t}$ through simple linear regression. Lets deduce Koyck geometric GLM models using precipitation regressor,
+
+```{r}
+Koyck = koyckDlm(x = as.vector(precipitation) , y = as.vector(solar) )
+summary(Koyck$model, diagnostics = TRUE)
+checkresiduals(Koyck$model$residuals)
+MASE(Koyck)
+```
+
+
+##### Conclusion of Koyck DLM model
+
+- model is significant 
+- **MASE is reduced 1.032483 (vs 1.5516)**
+- Adjusted R-squared improved to 75.91% (vs 30.87)
+- violations in the test of assumptions
+- Serial autocorrelation is significant
+- Multicollinearity is insignificant.
+
+
+#### Fit Autoregressive Distributed Lag Model
+
+Autoregressive Distributed lag model is a flexible and parsimonious infinite DLM. The model is represented as, <br />
+  
+$Y_t = \mu + \beta_0 X_t + \beta_1 X_{t-1} + \gamma_1 Y_{t-1} + e_t$ <br />
+
+Similar to the Koyck DLM, it is possible to write this model as an infinite DLM with infinite lag distribution of any shape rather than a polynomial or geometric shape. The model is denoted as ARDL(p,q). To fit the model we will use ardlDlm() function is used. Lets find the best lag length using AIC and BIC score through an iteration. Lets set max lag length to 12.
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+# First create an empty df. Iterate over 144 ARDL (since max lag for response and predictor of ARDL model is 12, i.e, p = q = 12 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+                vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+                stringsAsFactors=F) # create empty dataframe
+for(i in 1:12){
+  for(j in 1:12){
+    model4.1 = ardlDlm(formula = solar ~ ppt, data = solar_precipitation, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new
+  }
+} # Iterate and save in df
+head(df[order( df[,3] ),],1) # Best model as per AIC
+head(df[order( df[,4] ),],1) # Best model as per BIC
+```
+
+ARDL(9,12) and ARDL(1,12) are the best models as per AIC and BIC scores respectively. Now, lets fit these 2 models, <br />
+
+##### 1. ARDL(9,12) model (BEST FINITE DLM MODEL)
+
+```{r}
+ARDL.9x12 = ardlDlm(formula = solar ~ ppt, data = solar_precipitation, p = 9, q = 12)
+summary(ARDL.9x12)
+checkresiduals(ARDL.9x12$model)
+MASE(ARDL.9x12)
+```
+
+##### Conclusion of ARDL(9x12) DLM model
+
+- model is significant 
+- **MASE is reduced 0.387012 (vs 1.032483)**
+- Adjusted R-squared improved to 94.77% (vs 75.91)
+- violations in the test of assumptions
+- Serial autocorrelations are significant
+- Multicollinearity is insignificant.
+
+##### 2. ARDL(1,12) model
+
+```{r}
+ARDL.1x12 = ardlDlm(formula = solar ~ ppt, data = solar_precipitation, p = 1, q = 12)
+summary(ARDL.1x12)
+checkresiduals(ARDL.1x12$model)
+MASE(ARDL.1x12)
+```
+
+##### Conclusion of ARDL(9x12) DLM model
+
+- model is significant 
+- MASE is worsened 0.3927514 (vs 0.387012)
+- Adjusted R-squared worsens to 94.47% (vs 94.77)
+- violations in the test of assumptions
+- Serial autocorrelations are significant
+- Multicollinearity is insignificant.
+
+##### Compare ARDL(9,12) and ARDL(1,12)
+
+- ARDL(9,12) has better fit as per R-squared statistic (94.77% vs 94.47%)
+- Better MASE 0.387012 (vs 0.3927514)
+
+##### Conclusion of ARDL models
+
+ARDL(9,12) is the best of all ARDL models with better MASE and adjusted R-squared statistic
+
+#### Most appropriate DLM model based on MASE (Model Selection)
+
+The 4 DLM models are, <br />
+
+- Finite DLM model: **DLM.model**
+- Polynomial DLM model: **PolyDLM**
+- Koyck transformed geometric DLM model: **Koyck**
+- Autoregressive DLM model: **ARDL.9x12**
+
+**mean absolute scaled errors** or **MASE** of these models are, <br />
+
+```{r}
+MASE(DLM.model, PolyDLM, Koyck, ARDL.9x12)
+```
+
+#### Conclusion of Distributed Lag models (DLM) modelling
+
+The Best DLM model for the Solar Radiation response based on the precipitation regressor which gives the most accurate forecasting based on the MASE measure is the Autoregressive DLM model, **ARDL.9x12** with MASE measure of 0.3927514. 
+
+
+### B. Dynamic linear models (dynlm package)
+
+Dynamic linear models are general class of time series regression models which can account for trends, seasonality, serial correlation between response and regressor variable, and **most importantly the affect of intervention points**.
+
+The response of a general Dynamic linear model is,  <br />
+
+$Y_t = \omega_2Y_{t-1} + (\omega_0 + \omega_1)P_t - \omega_2\omega_0P_{t-1} + N_t$ <br />
+
+where, <br />
+
+- $Y_t$ is the response 
+- $\omega_2$ is the coefficient of 1 time unit lagged response
+- $P_t$ is the current pulse affect at the intervention point with $(\omega_0 + \omega_1)$ coefficient representing the instantaneous effect of the intervention point 
+- $P_{t-1}$ is the past pulse affect with  $\omega_2\omega_0$ coefficient 
+- $N_t$ is the process represents the component where there is no intervention and is referred to as the natural or unperturbed process.
+
+Lets revisit the time series plot for the response, Solar Radiation, to visualize possible intervention points <br />
+
+```{r}
+plot(solar)
+```
+
+As mentioned at the descriptive analysis stage, there is no clear intervention that we identify visually. Note, peak values seen in the plot (1998 July for example) are not intervention points as the mean solar radiation before and after (even after a long period) does not change. But maybe 2013 January might be an intervention point as the variance of the series decreases drastically from this point. Assuming this intervention point lets fit a Dynamic Linear model and see if the pulse function at 2013 January is significant or not.
+
+Recall from the decomposition, our Solar Radiation series has a significant seasonal component and not so significant trend component. This can be revised using the ACF and PACF plots of the response, Solar Radiation series shown below,
+
+```{r}
+acf(solar,main="ACF of Solar Radiation series")
+pacf(solar,main="PACF of Solar Radiation series")
+```
+
+Repeating patterns in ACF suggest seasonality and largely significant first lag in PACF suggest trend. We will consider both in $N_t$ component of our dynamic model. 
+
+Now, lets fit Dynamic Linear model using dynlm() with season() and trend() arguments as shown below, (Note, the intervention point of January 2013 was identified at T=463)
+
+```{r}
+Y.t = solar
+T = 463 # The time point when the intervention occurred 
+P.t = 1*(seq(solar) == T)
+P.t.1 = Lag(P.t,+1) #library(tis) 
+
+Dyn.model = dynlm(Y.t ~ L(Y.t , k = 1 ) + P.t + trend(Y.t) + season(Y.t)) # library(dynlm)
+summary(Dyn.model)
+checkresiduals(Dyn.model)
+```
+##### Conclusion of Dynamic Linear model
+
+Most importantly, **pulse (P.t) is insignificant** at time 2013 (p=0.15 > 0.05). Although model is significant, since there is no significant intervention point that would change the mean level of the series, **Dynamic Linear model is not suitable/necessary for our Solar Radiation time series.**
+
+
+### C. Exponential Smoothing Method
+
+In exponential smoothing, we represent the trend component as a combination of a level term $(ℓ)$ and a growth term $(b)$. The level and growth can be combined in a number of ways, giving different trend types and hence, different exponential smoothing methods. They are namely,
+
+- Simple Exponential Smoothing
+- Holt’s Linear Method
+- Holt-Winters’ Trend and Seasonality Method
+
+**NOTE -** All variations of Exponential Smoothing Methods will be tested for **exercise purpose** although we know a model with seasonal component should be the best fit (namely Holt-Winters' Exponential smoothing variant).
+
+#### Simple exponential smoothing
+
+Here, trend and seasonal component are not considered. We have just one smoothing constant, $\alpha$ which will be decide by the software. Lets fit the Simple exponential smoothing model and get its forecasts, look at its summary, and check violation of residuals assumptions.
+
+First. lets fit simple exponential model, 
+
+##### 1. by setting initial = Simple
+
+Here, argument initial is set to simple so the initial values are obtained using simple calculations on the first few observations.
+
+```{r}
+ses.simple <- ses(solar, initial="simple", h=24) # We let the software estimate alpha. # h=24 for 2 years forecast
+summary(ses.simple)
+checkresiduals(ses.simple)
+```
+
+**Model summary:** <br />
+
+- MASE score is 0.636771
+- Serial autocorrelations are highly significant. (As per Ljung-Box test output, the null hypothesis that a series of residuals exhibits no autocorrelation is violated as p value < 0.05.)
+
+Now, lets fit optimal exponential model, 
+
+##### 2. by setting initial = optimal 
+
+Here, argument initial is set to optimal so the initial values are optimized along with the smoothing parameters.
+
+```{r}
+ses.optimal <- ses(solar, initial="optimal", h=24)
+summary(ses.optimal)
+checkresiduals(ses.optimal)
+```
+
+**Model summary:** <br />
+
+- MASE score worsens to 0.6368203 (vs 0.636771)
+- Serial autocorrelations are highly significant.
+
+##### Conclusion of Simple exponential smoothing
+
+**Simple exponential smoothing model, ses.simple** is better as per MASE measure (0.636771) compared to Optimal exponential smoothing model, ses.optimal. <br />
+
+Moving onto the next method, lets add Trend components to the model using Holt's Linear models, <br />
+
+#### Holt's Linear smoothing methods
+
+Holt’s linear method extends simple exponential smoothing to linear exponential smoothing to be able **include trend to the forecasting model**. Here, we have two smoothing constants $\alpha$ and $\beta*$. Lets fit the models and get forecasts,
+
+First, lets fit Holt's simple Linear trend model,
+
+##### 1. Holts Linear trend
+
+```{r}
+holt.linear <- holt(solar, initial="simple", h=24) # Let the software estimate both alpha and beta
+summary(holt.linear)
+checkresiduals(holt.linear)
+```
+**Model summary:** <br />
+
+- MASE score improves to 0.4610361 (vs 0.636771)
+- Serial autocorrelations are highly significant.
+
+Next, lets fit Holt's exponential trend model,
+
+##### 2. Holts Exponential trend
+
+```{r}
+holt.exponential <- holt(solar, initial="optimal", exponential=TRUE, h=24) # Fit with exponential trend
+summary(holt.exponential)
+checkresiduals(holt.exponential)
+```
+
+**Model summary:** <br />
+
+- MASE score worsens to 0.6381458 (vs 0.4610361)
+- Serial autocorrelations are highly significant.
+
+Note, we use initial="optimal" since we get "optimization failure" when using simple method.
+
+Next, lets fit Holt's Damped trend model,
+
+##### 3. Holts Damped trend
+
+```{r}
+holt.damped <- holt(solar, damped=TRUE, initial="simple", h=24) # Fit with additive damped trend
+summary(holt.damped)
+checkresiduals(holt.damped)
+```
+
+**Model summary:** <br />
+
+- MASE score improves to 0.433476 (vs 0.4610361)
+- Serial autocorrelations are highly significant.
+
+##### Conclusion of Holt's Linear smoothing methods 
+
+**Holt's Damped Linear smoothing model**, $holt.damped$ with MASE measure of 0.433476 is best Holt's Linearly smoothed model.  <br />
+
+Moving onto the next method, lets add Seasonal components to the model using Holt-Winters' Trend and Seasonality Method, <br />
+
+#### Holt-Winters’ Trend and Seasonality Method
+
+Since our Solar Radiation response time series has a seasonality, Holt’s-Winter method provides a solution to the model fitting problem. Holt-Winters’ method has the smoothing equations for the level, for trend, and seasonality. There are two different Holt-Winters’ methods, depending on whether seasonality is modelled in an additive or multiplicative way. Here, we have three smoothing constants $\alpha$ , $\beta*$, and $\gamma$. Lets fit the models and get forecasts,
+
+We will look at 5 cases,
+
+- Additive seasonality case
+  * without damping
+  * with damping
+
+(Note, additive seasonality with exponential trend is a forbidden model combination, hence not considered)
+
+- Multiplicative seasonality case
+  * without damping
+  * with damping
+  * with exponential trend
+  
+First, lets look at the additive seasonality case,
+
+##### 1. Additive seasonality case
+
+**a. Additive seasonality case without damping -** <br />
+
+```{r}
+Add.hw <- hw(solar,seasonal="additive", h=2*frequency(solar))
+summary(Add.hw)
+checkresiduals(Add.hw)
+```
+
+**Model summary:** <br />
+
+- MASE measure improves to 0.24716 (vs 0.433476 Holt's damped linear trend model)
+- Serial autocorrelations are highly significant.
+
+Lets consider damped = TRUE,
+
+**b. Additive seasonality case with damping -** <br />
+
+```{r}
+Add.hw.damped <- hw(solar,seasonal="additive",damped = TRUE, h=2*frequency(solar))
+summary(Add.hw.damped)
+checkresiduals(Add.hw.damped)
+```
+
+**Model summary:** <br />
+
+- MASE measure improves to 0.2461797 (vs 0.24716 without damping)
+- Serial autocorrelations are highly significant.
+
+Next, lets fit Multiplicative seasonality case, 
+
+##### 2. Multiplicative seasonality case
+
+**a. without damping -** <br />
+
+```{r}
+Mul.hw <- hw(solar,seasonal="multiplicative", h=2*frequency(solar))
+summary(Mul.hw)
+checkresiduals(Mul.hw)
+```
+
+**Model summary:** <br />
+
+- MASE measure improves to 0.2233077 (vs 0.2461797 of damped additive seasonality case)
+- Serial autocorrelations are slightly significant (p-value = 0.03017 < 0.05)
+
+Lets consider exponential = TRUE,
+
+**b. with exponential trend -** <br />
+
+```{r}
+Mul.hw.exponential <- hw(solar,seasonal="multiplicative",exponential = TRUE, h=2*frequency(solar))
+summary(Mul.hw.exponential)
+checkresiduals(Mul.hw.exponential)
+```
+
+**Model summary:** <br />
+
+- MASE measure degrades to 0.2320404 (vs 0.2233077 of multiplicative seasonality without damping).
+- Serial autocorrelations are **insignificant** (p-value = 0.4864 > 0.05)
+
+Lets consider damped = TRUE,
+
+**c. with damping (BEST EXPONENTIAL SMOOTHING/OVERALL REGRESSION MODEL) -** <br />
+
+```{r}
+Mul.hw.damped <- hw(solar,seasonal="multiplicative", damped = TRUE, h=2*frequency(solar))
+summary(Mul.hw.damped)
+checkresiduals(Mul.hw.damped)
+```
+
+**Model summary:** <br />
+
+- MASE measure improves to 0.2035619 (vs 0.2233077 of multiplicative seasonality without damping)
+- Serial autocorrelations are **insignificant** (p-value = 0.4864 > 0.05)
+
+##### Conclusion of Holt-Winters' methods 
+
+**Holt-Winters Multiplicative Seasonal model with Damped trend**, $Mul.hw.damped$ with MASE measure of 0.2035619 is best Holt-Winters' model. <br />
+
+#### Most appropriate Exponential Smoothing model based on MASE (Model Selection)
+
+Lets summarise all the Exponential Smoothing methods and their models considered with their corresponding forecast accuracy measure, MASE,
+
+- Simple Exponential smoothing
+  * initial = Simple | 0.636771 (MASE measure)
+  * initial = optimal | 0.6368203
+
+- Holts Linear method
+  * Holts Linear trend | 0.4610361
+  * Holts Exponential trend | 0.6381458
+  * Holts Damped trend | 0.433476
+
+- Holt-Winters Trend and seasonality method
+  * 1. Additive seasonality
+    + without damping | 0.24716
+    + with damping | 0.2461797
+  * 2. Multiplicative seasonality
+    + without damping | 0.2233077
+    + with damping | 0.2035619
+    + with exponential | 0.2320404
+
+The best model among the 3 types of Exponential Smoothing models considered were, <br />
+
+- Best Simple exponential smoothing model with no trend or seasonality is  with MASE measure = 0.636771
+- Best Holt's Linear smoothing model with trend and no seasonality is **holt.damped** with MASE measure = 0.433476
+- Best Holt-Winters' smoothing model with trend and multiplicative seasonality is **Mul.hw.damped** with MASE measure = 0.2035619
+
+From the above results, clearly our Solar Radiation time series has a damped trend. The **seasonal component is multiplicative** than additive unlike what was inferred from the classical decomposition analysis. *The best fitting model so far is the Holt-Winters' multiplicative damped smoothing model with lowest MASE measure of 0.2035619.
+
+#### Conclusion of Exponential Smoothing method
+
+The best Exponential smoothing model which gives the most accurate forecasting based on the MASE measure is the **Holt-Winters’ multiplicative model with damped trend** ($Mul.hw.damped$) with MASE measure of 0.2035619.
+
+
+### D. State-Space models
+
+State-Space models are basically Exponential smoothing models but with Error components taken into account. State-Space models uses the innovations formulation of the model where $Y_t$ denotes the observation at time t, and let $X_t$ is the state vector that describes the level, trend and seasonality of the series. A **linear (Additive homoscedastic errors )** innovations state-space model is written as, <br />
+
+$Y_t = \omega'X_t + \epsilon_t$, <br />
+
+where $\epsilon_t$ is a white noise series <br />
+
+**Nonlinear (Multiplicative heteroscedastic errors terms)** state-space models are also possible and have the form, <br />
+
+$Y_t = \omega'(X_{t-1}) + r(X_{t-1})\epsilon_t$, <br />
+
+Lets first look at the linear (Additive errors) State Space models,
+
+The State-Space models are generally depicted as ETS(Z,Z,Z), where Z can be None, Additive or Multiplicative (and damped). For example, ETS(A,N,N) is a state-space model with Additive error terms and no trend or seasonal components,
+
+Since we do not know if the errors are additive or multiplicative, we will test both of these cases.
+
+We will look at the following cases and compare them with their respective Exponential Smoothed cases withour error component,
+
+- Additive error models: ETS(A,-,-)
+  * ETS(A,N,N) - also known as, Holt's Local Level Model
+  * ETS(A,A,N) - Holt's Local Trend Model
+    + ETS(A,A,N) with drift 
+    + ETS(A,A,N) with damping
+  * ETS(A,N,A) 
+  * ETS(A,A,A) - Holt's Local Additive Seasonal Model
+
+- Multiplicative error models: ETS(M,-,-)
+  * ETS(M,N,N) - Holt-Winters' Local Level Model
+  * ETS(M,A,N) - Holt-Winters' Local Trend Model 
+  * ETS(M,A,A) - Holt-Winters' Additive Seasonal Model 
+  * ETS(M,A,M) - Multiplicative seasonal and error model
+  * ETS(M,M,N) - Multiplicative trend and error model
+
+Since many other variations are 
+
+#### 1. Additive error models: ETS(A,-,-)
+
+Since our response, Solar Radiation has seasonal component, we  
+
+##### a. ETS(A,N,N)
+
+This Additive error model has no trend or seasonal component. **Note - This is also the Holt's Local Level Model: ETS(A,N,N)**. In this model, at any point along the data path, the values in the neighbourhood of the point are approximated by a short flat line representing what is referred to as a local level. This model corresponds to the simple exponential smoothing model with additive error terms. We use the ets() function to fit the model. <br />
+
+```{r}
+Add.SS.ANN = ets(solar, model="ANN")
+summary(Add.SS.ANN)
+checkresiduals(Add.SS.ANN)
+```
+
+**Model summary:** <br />
+
+- MASE measure degrades to 0.6368203 (vs 0.2035619 Holt-Winters model without error component).
+- Serial autocorrelations are highly significant
+
+##### b. ETS(A,A,N)
+
+This Additive error model has Additive trend and no seasonal component. **Note - This is also the Holt's Local Trend Model: ETS(A,A,N).** In this model, at each point, the data path is approximated by a tangential line in the deterministic case. We can fit 3 different models by considering damping and drift aspects, <br />
+
+**x. General ETS(A,A,N) -** <br />
+
+```{r}
+Add.SS.AAN = ets(solar, model="AAN")
+summary(Add.SS.AAN)
+checkresiduals(Add.SS.AAN)
+```
+
+**Model summary:** <br />
+
+- MASE measure improves to 0.4334691 (vs 0.6368203 of ETS(A,N,N)).
+- Serial autocorrelations are highly significant <br />
+
+**y. ETS(A,A,N) with drift -** <br />
+
+A local **trend** model allows the growth rate to change stochastically over time. If $\beta$=0, the growth rate is constant and equal to a value that will be denoted by b. This model is hence the **local level model with drift** and is also known as simple exponential smoothing with drift. We use ets() function with beta=0 to fit this model. We set the argument beta to a value very close to zero.
+
+```{r}
+Add.SS.AAN.drift = ets(solar, model="AAN", beta = 1E-4)
+summary(Add.SS.AAN.drift)
+checkresiduals(Add.SS.AAN.drift)
+```
+
+**Model summary:** <br />
+
+- MASE measure degrades to 0.6385788 (vs 0.4334691 of ETS(A,A,N)). (Drift worsens the model)
+- Serial autocorrelations are highly significant <br />
+
+**z. ETS(A,A,N) with damping -** <br />
+
+```{r}
+Add.SS.AAN.damped = ets(solar, model="AAN")
+summary(Add.SS.AAN.damped)
+checkresiduals(Add.SS.AAN.damped)
+```
+
+**Model summary:** <br />
+
+- MASE measure degrades to 0.4334691 (vs 0.4334691 of general ETS(A,A,N)). (Damping makes no difference)
+- Serial autocorrelations are highly significant <br />
+
+##### c. ETS(A,N,A)
+
+This Additive error model has additive seasonal and no trend component.
+
+```{r}
+Add.SS.ANA = ets(solar, model="ANA")
+summary(Add.SS.ANA)
+checkresiduals(Add.SS.ANA)
+```
+
+**Model summary:** <br />
+
+- MASE measure worsens to 0.254704  (vs 0.2461797 of general ETS(A,A,N)).
+- Serial autocorrelations are highly significant <br />
+
+##### d. ETS(A,A,A)
+
+This Additive error model has Additive trend and Additive seasonal component. **Note - This is also the Local Additive Seasonal Model: ETS(A,A,A).** <br />
+
+```{r}
+Add.SS.AAA = ets(solar, model="AAA")
+summary(Add.SS.AAA)
+checkresiduals(Add.SS.AAA)
+```
+
+**Model summary:** <br />
+
+- MASE measure imrpoves to 0.2461797 (vs 0.4334691 of general ETS(A,A,N)).
+- Serial autocorrelations are highly significant <br />
+
+
+#### 2. Multiplicative error models: ETS(M,-,-)
+
+Lets not consider drift and damping for each model to maintain simplicity of reporting (The best model will be chosen as per auto-fit anyways).
+
+##### a. ETS(M,N,N)
+
+This Multiplicative error model has no trend or seasonal component. **Note - This is also the Holt-Winters' Local Level Model: ETS(M,N,N)**
+
+```{r}
+Mul.SS.MNN = ets(solar, model="MNN")
+summary(Mul.SS.MNN)
+checkresiduals(Mul.SS.MNN) 
+```
+
+**Model summary:** <br />
+  
+- MASE measure degrades to 0.6369599 (vs 0.2035619 Holt-Winters model without error component).
+- Serial autocorrelations are highly significant
+
+**Comment -** <br />
+
+Note - MNN model is bad compared to ANN model (MASE - 0.6368203 vs MASE - 0.636959). This is because, our time series is homoscedastic (equal variance of error terms) as seen from its time series plot. And we know for a homoscedastic series, a model with Additive error terms fit the series better than multiplicative error terms.
+
+##### b. ETS(M,A,N)
+
+```{r}
+Mul.SS.MAN = ets(solar, model="MAN")
+summary(Mul.SS.MAN)
+checkresiduals(Mul.SS.MAN)
+```
+
+**Model summary:** <br />
+  
+- MASE measure degrades to 0.6513597
+- Serial autocorrelations are highly significant
+
+##### c. ETS(M,A,A)
+
+```{r}
+Mul.SS.MAA = ets(solar, model="MAA")
+summary(Mul.SS.MAA)
+checkresiduals(Mul.SS.MAA) 
+```
+
+**Model summary:** <br />
+  
+- MASE measure improves to 0.3798095
+- Serial autocorrelations are highly significant
+
+##### d. ETS(M,A,M)
+
+Note - This is also the **Non-linear seasonal model**, namely, Multiplicative Seasonal and Error Model: ETS(M,A,M). When the pattern of seasonality changes through time, linear seasonal structure cant be used. In that case, we use nonlinear seasonal models. It is hard to tell if our solar radiation series's seasonality pattern changes through time or not. So, lets consider the nonlinear multiplicative seasonal component (MAM) model,
+
+```{r}
+Mul.SS.MAM = ets(solar, model="MAM")
+summary(Mul.SS.MAM)
+checkresiduals(Mul.SS.MAM)
+```
+
+**Model summary:** <br />
+  
+- MASE measure improves to 0.3222574
+- Serial autocorrelations are highly significant
+
+##### e. ETS(M,M,N)
+
+We know our series is seasonal, so not having seasonal component as none (MMN) should be a bad fit. Lets check anyways,
+
+```{r}
+Mul.SS.MMN = ets(solar, model="MMN")
+summary(Mul.SS.MMN)
+checkresiduals(Mul.SS.MMN)
+```
+**Model summary:** <br />
+  
+- MASE measure degrades to 0.695816
+- Serial autocorrelations are highly significant
+
+#### Most appropriate State-Space model based on MASE (Model Selection)
+
+Lets summarise all the State-Space models considered with their corresponding forecast accuracy measure, MASE,
+
+- Additive error models: ETS(A,-,-)
+	a. ETS(A,N,N) - Holt's Local Level Model | 0.6368203
+	b. ETS(A,A,N) - Holt's Local Trend Model 
+		x. ETS(A,A,N) | 0.4334691
+		y. ETS(A,A,N) with drift | 0.6385788
+		z. ETS(A,A,N) with damping | 0.4334691
+	c. ETS(A,N,A) | 0.254704
+	d. ETS(A,A,A) - Holt's Local Additive Seasonal Model | 0.2461797
+
+Best State-Space model with additive error term is ETS(A,A,A) with MASE measure of 0.2461797. <br />
+
+- Multiplicative error models: ETS(M,-,-)
+	a. ETS(M,N,N) - Holt-Winters' Local Level Model | 0.6369599
+	b. ETS(M,A,N) - Holt-Winters' Local Trend Model | 0.6513597
+	c. ETS(M,A,A) - Holt-Winters' Local Additive Seasonal Model | 0.3798095
+	d. ETS(M,A,M) | 0.3222574
+	e. ETS(M,M,N) | 0.695816
+
+Best State-Space model with Multiplicative error term is ETS(M,A,M) with MASE measure of 0.3222574. <br />
+
+It seems in general models with Additive error components have better forecasting accuracy measure than their multiplicative error counterpart. It is important to note that, there are many other possible models which we have missed out. To avoid the hassle, we can autofit the best State-Space model using the below code,
+
+```{r}
+autofit.SS = ets(solar)
+summary(autofit.SS)
+checkresiduals(autofit.SS) # Autofit finds the ETS(A,Ad,A).
+```
+
+The auto fitted model is the **ETS(A,Ad,A)** model having the least MASE value of 0.2461797 of all possible State space models.
+
+#### Conclusion of State-Space method
+
+The best State-space model which gives the most accurate forecasting based on the MASE measure is **ETS(A,Ad,A)** having lowest MASE measure of 0.2461797 of all possible State space models.
+
+### Overall Most Appropriate Regression model (Model Selection)
+
+Based on the 4 Time series regression methods considered, the best model as per MASE measure for each method is summarized below, <br />
+
+- A. Best Distributed lag models is - Autoregressive Distributed Lag model ***ARDL(9,12)*** with MASE measure of ***0.3927514***
+- B. Best Dynamic linear models is - None (No intervention points were present)
+- C. Best Exponential smoothing model is - **Holt-Winters’ multiplicative Damped model** with MASE measure of **0.2035619**
+- D. Best State-Space model is - ***ETS(A,Ad,A)*** with MASE measure of ***0.2461797***
+
+### Best Time Series regression model for Forecasting
+
+Best Time Series regression model is - **Holt-Winters’ multiplicative Damped model ($Mul.hw.damped$)** with MASE measure of **0.2035619**.
+
+## Detailed Graphical and statistical tests of assumptions for $Mul.hw.damped$ model (Residual Analysis)
+
+Residual analysis to test model assumptions. <br />
+
+Lets perform a detailed ***Residual Analysis*** to check if any model assumptions have been violated. 
+
+The estimator error (or residual) is defined by: <br />
+
+$\hat{\epsilon_i}$ = $Y_i$ - $\hat{Y_i}$ (i.e. observed value less -
+trend value)
+
+The following problems are to be checked,
+
+  1. linearity in distribution of error terms
+  2. The mean value of residuals is zero 
+  3. Serial autocorrelation
+  4. Normality of distribution of error terms
+
+Lets first apply diagnostic check using checkresiduals() function, 
+
+``` {r}
+checkresiduals(Mul.hw.damped)
+```
+
+1. From the Residuals plot, linearity is not violated as the residuals are randomly distributed across the mean. Thus, **linearity in distribution of error terms is not violated**
+
+2. To test mean value of residuals is zero or not, lets calculate mean value of residuals as,
+
+```{r}
+mean(Mul.hw.damped$model$residuals)
+```
+
+As mean value of residuals is close to 0, **zero mean residuals is not violated**.
+
+3. In the checkresiduals output, the Ljung-Box test output is displayed. According to this test, the hypothesis are,
+
+Which has, <br />
+$H_0$ : series of residuals exhibit no serial autocorrelation of any order up to p <br />
+$H_a$ : series of residuals exhibit serial autocorrelation of any order up to p <br />
+
+From the Ljung-Box test output, since p (0.4864) > 0.05, we do not reject the null hypothesis of no serial autocorrelation. 
+
+Thus, according to this test and ACF plot, we can conclude that the **serial correlation left in residuals is insignificant**.
+
+4. From the histogram shown by checkresiduals(), residuals seem to follow normality. Lets test this statistically,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(Mul.hw.damped$model$residuals)
+```
+
+From the Shapiro-Wilk test, since p<0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, residuals of Mul.hw.damped are **Not normally** distributed.
+
+**Summarizing residual analysis on $full$ model:**
+
+Assumption 1: The error terms are randomly distributed and thus show linearity: ***Not violated*** <br /> 
+Assumption 2: The mean value of E is zero (zero mean residuals): ***Not violated*** <br /> 
+Assumption 4: The error terms are independently distributed, i.e. they are not autocorrelated: ***Not violated*** <br /> 
+Assumption 5: The errors are normally distributed. **Violated** <br /> 
+
+Although normality of residuals assumption is violated, 'There is no normality assumption in fitting an exponential smoothing model' (Rob Hyndman 2013). Having no residual assumptions' violations, the Holt-Winters’ multiplicative Damped model is good for accurate forecasting. Lets forecast for the next 2 years,
+
+## Forecasting
+
+Using the model with best MASE measure, Holt-Winters’ multiplicative Damped model (Mul.hw.damped), lets estimate and plot 2 years (2015 Jan - 2016 Dec) ahead forecasts.  The following code chunk displays the fitted model, observed series and forecasts for 2 year time points ahead.
+
+*Note, Since we are forecasting using Holt-Winters' model which does not incorporate regressor variables, we do not need the regressor (Precipitation) variable's measures (Unlike Distributed Lag models)*
+
+```{r warning=FALSE}
+
+Mul.hw.damped <- hw(solar,seasonal="multiplicative", damped = TRUE, h=2*frequency(solar)) # Revisit the fitted model
+
+plot(Add.hw.damped, ylab="Monthly solar radiation reaching ground", main = "Forecasts from Holt-Winter's damped Multiplicative method", plot.conf=FALSE, type="l", fcol="white", xlab="Year") 
+lines(fitted(Mul.hw.damped), col="blue", lty=1) 
+lines(Mul.hw.damped$mean, type="l", col="blue")
+legend("topleft",lty=1, pch=1, col=c(1,4), 
+       c("Raw Data", "Holt Winters' fitted data"))
+```
+In the plot above, Blue lines after 2014 shows the forecasted 2 year Solar Radiation data. The gray region around it shows the 95% and 80% prediction intervals of the forecasts.
+
+The point forecast values are, 
+
+```{r}
+Mul.hw.damped$mean
+```
+
+# Task 2: Analyzing the Relationship Between Melbourne Property Price Index and Victoria Population Change: Is It Spurious?
+
+## Data Description
+
+The dataset hold 2 columns and 54 observations. They are, quarterly Residential Property Price Index (PPI) in Melbourne and quarterly population change over the previous quarter in Victoria between September 2003 and December 2016. 
+
+## Objective
+
+Our aim for the given dataset is to analyse whether the correlation between the quarterly Property Price Index (PPI) in Melbourne and quarterly population change over the previous quarter in Victoria is spurious or not.
+
+### Read Data
+
+```{r}
+data <- read.csv("C:/Users/admin/Downloads/data2.csv")
+data.ts = ts(data, start=c(2003,3),frequency = 4)
+
+head(data.ts)
+```
+
+## Analysing Spurious Correlation
+
+### Identifying Response and Covariate time series
+
+The response, $Y$ = {$Y_t$} is the Price Index (PPI) and the co variate time series, $X$ = {$X_t$} is Population Change that we hope will explain $Y$. 
+
+- **Response** time series = Y = Quarterly Property Price Index (PPI) in Melbourne
+- **Co-variate** time series = X = Quarterly Population Change over previous quarter in Victoria
+
+**Read Response and Covariate TS - ** <br />
+
+```{r}
+data_PPI = data.ts[,2]
+head(data_PPI) #Response TS
+
+data_pchange = data.ts[,3]
+head(data_pchange) #Covariate TS
+
+data.joint=ts.intersect(data_PPI,data_pchange) # Response and Covariate TS together
+head(data.joint)
+```
+
+### The sample cross-correlation function (sample CCF)
+
+The sample cross-correlation function (sample CCF) defined by,
+
+$r_k(X,Y) = \frac{\sum (X_t - \overline{X})(Y_t - \overline{Y})}{\sqrt{\sum (X_t - \overline{X})^2}\sqrt{\sum (Y_t - \overline{Y})^2}}$
+
+Sample cross-correlations that are larger than 1.96/n in magnitude are then deemed significantly different from zero.
+
+Cross-correlations or Spurious correlations **may** arise due to the non-stationarity of the interaction Time series. Lets check nonstationarity in the response and covariate series by analyzing the time series plot and testing statistically as well,
+
+**Analysing Time Series plots for non-stationarity -** <br />
+
+```{r}
+plot(data.joint,yax.flip=T)
+```
+
+Time series plots of both ***PPI*** and ***Population Change*** suggest non-stationarity as there is a clear upward trend in both of these time series. Lets confirm non-stationarity in both the response and covariate TS statistically,
+
+**Test Stationarity of Response and Covariate time series -** <br />
+
+Lets use ADF (Augmented Dickey-Fuller) test. The test hypothesis are, <br />
+
+$H_0$ : Time series is Difference non-stationary <br />
+$H_a$ : Time series is Stationary
+
+```{r}
+adf.test(data.joint[,1]) # For Property Price Index (PPI)
+adf.test(data.joint[,2]) # For Population Change
+```
+For both response and covariate TS, since p-value > 0.05, we fail to reject null hypothesis of non stationarity. We can conclude that the series is **non stationary** at 5% level of significance.
+
+Thus if we see significant correlation between PPI and Population change series, it is likely due the spurious correlation due the non-stationarity of the interacting variables. We can check this by looking at the cross-correlations between PPI response and Population change covariate time series using CCF(),
+
+**Sample CCF plot -**<br />
+
+```{r}
+ccf(as.vector(data.joint[,1]), as.vector(data.joint[,2]),ylab='CCF', main = "Sample CCF between PPI and population change")
+```
+
+Nearly all of the cross-correlations are significantly different from zero according to the 1.96/n rule. The nonstationarity in the PPI series and the Population change series is more likely the cause of the spurious correlations found between the two series. 
+
+## Prewhitening
+
+Lets remove the spurious correlation between PPI and population change series by the process of ***prewhitening*** which is an approach to disentangle the linear association between PPI and Population change series from their autocorrelation.
+
+An **approximate Prewhitening** can be achieved **by differencing** (hence, eliminating non-stationarity in these 2 series). **Further prewhitening** can be done **using the prewhiten()** which transforms one of the two series such that it is uncorrelated (white noise).
+
+Since we have seasonal component in our response and covariate time series (not testing, rather just assuming as the data is quarterly), lets perform ordinary and seasonal differencing on both PPI and Population change series and see if the cross-correlations are removed,
+
+```{r}
+# Code gist - Inner diff(TS,freq) does seasonal differencing. Outer diff(TS) does ordinary differencing
+data.dif=ts.intersect(diff(diff(data_PPI,4)),diff(diff(data_pchange,4))) # Note quarterly frequency of 4 is used in seasonal differencing
+ccf(as.vector(data.dif[,1]), as.vector(data.dif[,2]),ylab='CCF', main = "Sample CCF between PPI and population change after differencing")
+```
+From the sample CCF plot, we notice **still some cross-correlations are significant after differencing**.
+
+Next, lets further prewhiten the differenced series using prewhiten() and check the sample CCF plot,
+
+```{r}
+prewhiten(as.vector(data.dif[,1]),as.vector(data.dif[,2]),ylab='CCF', main="Sample CFF after prewhitening") # library(TSA)
+```
+
+From the plot above, all the **cross-correlations are insignificant** according to the 1.96/n rule. Hence, spurious correlation has been eliminated from PPI and Population change series.
+
+**Thus, it seems that Property Price Index (PPI) and Population change are in fact largely uncorrelated, and the strong cross-correlations found between the raw data series is indeed spurious.**
+
+
+## Reference List
+
+Rob Hyndman (2013) *Does the Holt-Winters algorithm for exponential smoothing in time series modelling require the normality assumption in residuals?*, Stack Exchange Website, accessed 26 September 2023. https://stats.stackexchange.com/questions/64911/does-the-holt-winters-algorithm-for-exponential-smoothing-in-time-series-modelli#:~:text=There%20is%20no%20normality%20assumption,under%20almost%20all%20residual%20distributions.
+
+
+
