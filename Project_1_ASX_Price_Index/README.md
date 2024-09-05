@@ -26,15 +26,16 @@ The best fitting model is the Autoregressive Distributed Lag (ADRL(12,4)) model 
 
 ## How to Use
 - **Setup**: Requires R and necessary packages (`dLagM`).
-- **Usage**: Run `project.Rmd` in RStudio to generate the analysis report.
+- **Usage**: Run `Forecasting  - Project 1.Rmd` in RStudio to generate the analysis report. (Make sure you download and edit the location of ASX_data.csv in the Rmd before running) 
 
 ## Files
 - `README.md`: This file.
-- `project.Rmd`: The R Markdown file with code and analysis.
+- `Forecasting  - Project 1.Rmd`: The R Markdown file with code and analysis.
 - `project.html`: The HTML report of the analysis.
-- `dataset.csv`: The dataset used for forecasting.
+- `ASX_data.csv`: The dataset used for forecasting.
 
 ## Report
+Directly view report here -
 (https://rpubs.com/rahil1998/1216686)
 
 ## License
