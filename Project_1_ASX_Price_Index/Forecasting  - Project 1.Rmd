@@ -1,0 +1,905 @@
+---
+title: "Forecasting: Project 1"
+subtitle: "Evaluating the Best Regression Model for Forecasting ASX Price Index: A Comparative Analysis of Distributed Lag Models"
+author: "Shaikh Mohammad Rahil"
+date: "`26-08-2023`"
+output: 
+  html_document: 
+    toc: true
+  pdf_document: default
+toc-title: "Table of Contents"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(readr)
+library(forecast) # checkresiduals()
+library(TSA) # season() and other functions
+library(urca) # for ur.df()
+library(tseries) # for adf.test()
+library(stats) # for classical decomposition
+library(x12) # X-12-ARIMA decomposition
+library(GGally) #for ggpairs()
+library(car) #for vif()
+library(dLagM) # For DLM modelling
+library(lmtest) # for bgtest()
+```
+
+### Data Description
+
+The dataset hold 4 columns and 161 observations. They are, monthly averages of ASX All Ordinaries (Ords) Price Index, Gold price (AUD), Crude Oil (Brent, USD/bbl) and Copper (USD/tonne) starting from January 2004.
+
+### Objective
+
+Our aim for the ASX dataset is to determine the most accurate and suitable regression model that determines ASX Price Index using at least one of the 3 regressors. A descriptive analysis and decomposition of the response variable will be conducted initially. Model-building strategy will be applied to find the best fitting model from the 4 different Distributed Lag Models. 
+
+### Read Data
+
+```{r}
+ASX = read.csv("C:/Users/admin/Downloads/ASX_data.csv", header = TRUE)
+
+ASX$Gold.price <- as.numeric(gsub(",", "", ASX$Gold.price))
+ASX$Copper_USD.tonne <- as.numeric(gsub(",", "", ASX$Copper_USD.tonne))
+# Convert from character to numeric
+
+ASXPrice.ts = ts(ASX$ASX.price, start = c(2004,1), frequency = 12)
+head(ASXPrice.ts, 36)
+```
+### Identification of the response and the regressor variables
+
+For fitting a regression model, the response is **ASX Price Index** (ASX.price) and the 3 regressor variables are the **Gold price** (Gold.price), **Crude Oil in USD price per barrel** (Crude.Oil.Brent.USD.bbl) and **Copper price in USD per tonne** (CopperUSD.tonne).
+
+- y = ASX.price = ASX Price Index
+- x1 = Gold.price = Price of Gold in AUD
+- x2 = Crude.Oil..Brent._USD.bbl = Crude Oil in USD price per barrel
+- x3 = Copper_USD.tonne = Copper price in USD per tonne
+
+All the 4 variables are continuous variables.
+
+#### Read Regressor and Response variables
+
+Lets first get the regressor and 3 response as TS objects,
+
+```{r}
+ASXPrice.ts = ts(ASX$ASX.price, start = c(2004,1), frequency = 12) # Y
+GoldPrice.ts = ts(ASX$Gold.price, start = c(2004,1), frequency = 12) #X1
+CrudeOilPrice.ts = ts(ASX$Crude.Oil..Brent._USD.bbl, start = c(2004,1), frequency = 12) # X2
+CopperPrice.ts = ts(ASX$Copper_USD.tonne, start = c(2004,1), frequency = 12) # X3
+data.ts = ts(ASX, start = c(2004,1), frequency = 12) # Y, X1, X2, X3 all in single dataframe
+```
+
+### Relationship between Regressor and Response variables
+
+Lets scale, center and plot all the 4 variables together
+
+```{r}
+data.scale = scale(data.ts)
+plot(data.scale, plot.type="s", col=c("black", "red", "blue", "green"), main = "ASX Price Index (Black - Respone), Gold Price (Red - X1),\n  Oil price (Blue - X2), Copper Price (Green - X2)")
+```
+
+It is hard to read the correlations between the regressors and the response and the among the response themselves. But it is fair to say the 4 variables show some correlations. Lets check for correlation statistically using ggpairs(),
+
+```{r}
+ggpairs(data = ASX, columns = c(1,2,3,4), progress = FALSE) #library(ggally)
+```
+
+As shown in the matrix above, <br />
+- Response ASX price index and regressors Gold price, Crude oil price and copper price are correlated by 0.343, 0.329 and 0.562 correlation coefficient.
+- The regressors themselves are correlated by 0.437 (Gold and Crude oil price), 0.536 (Gold and Copper price) and 0.866 (Crude oil and Copper price)
+
+Hence, some correlations between the 3 regressor and response is present. We can generate regression model based on these correlations. First, lets look at the descriptive statistics
+
+### Descriptive Analysis
+
+Since we are generating regression model which estimates the response, **$ASX Price Index$**, lets focus on ASX.Price's statistics.
+
+#### Summary statistics
+
+```{r}
+summary(ASXPrice.ts)
+```
+
+The mean and median of the ASX Price Index are very close indicating symmetrical distribution.
+
+#### Time Series plot:
+
+The time series plot for our data is generated using the following code chunk,
+
+```{r}
+plot(ASXPrice.ts,ylab='ASX Price Index',xlab='Time',
+     type='o', main="Figure 1: ASX All Ordinaries Price Index Trend from January, 2004")
+points(y=ASXPrice.ts,x=time(ASXPrice.ts), pch=as.vector(season(ASXPrice.ts)))
+```
+
+**Plot Inference :** <br />
+
+From Figure 1, we can comment on the time series’s,
+
+- **Trend:** The overall shape of the trend seems to follow an upward trend except from 2008 to 2009. Thus, indicating **non-stationarity**.
+
+- **Seasonality:** From the plot, **no noticeable seasonal behavior** is seen as no clear repeating patterns are visible. This needs to be confirmed using statistical tests.
+
+- **Change in Variance:** A **change in variance can be seen** as the variation is much higher during the earlier years than the latter.
+
+- **Behavior:** We notice mixed behavior of MA and AR series. In the earlier years (2004-2009), AR behavior is dominant as we obverse more following data points. In the latter years (2010-2017), MA behavior is more evident due to more up and down fluctuations than following data points.
+
+- **Intervention/Change points:** Steep drop around 2008 might be an intervention point. This needs to be confirmed using statistical tests.
+
+#### ACF and PACF plots:
+
+```{r}
+par(mfrow=c(2,1))
+acf(ASXPrice.ts, main="ACF of ASX All Ordinaries Price Index")
+pacf(ASXPrice.ts, main ="PACF of ASX All Ordinaries Price Index")
+par(mfrow=c(1,1))
+```
+
+- **ACF plot:** We notice multiple autocorrelations are significant. A slowly decaying pattern indicates **non stationary** series. We do not see any ‘wavish’ form. Thus, **no seasonal behavior** is observed. We did not observe seasonality in time series plot as well.
+
+- **PACF plot:** We see 1 high vertical spike indicating **non stationary** series. We have observed non stationarity in the time series plot as well. Also, the second correlation bar is significant as well.
+
+#### Check normality
+
+Many model estimating procedures assume normality of the residuals. If this assumption doesn't hold, then the coefficient estimates are not optimum. Lets look at the Quantile-Quantile (QQ) plot to to observe normality visually and the Shapiro-Wilk test to statistically confirm the result.
+
+```{r}
+qqnorm(ASXPrice.ts, main = "Normal Q-Q Plot of ASX Price Index Time Series")
+qqline(ASXPrice.ts, col = 2)
+```
+
+
+We see deviations from normality. Clearly, both the tails are off and most of the data in middle is off the line as well. Lets check statistically using shapiro-wilk test. Lets state the hypothesis of this test,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(ASXPrice.ts)
+```
+
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, ASX Price Index is **not normally** distributed.
+
+#### Test Stationarity
+
+The ACF, PACF and time series plots of the $ASX Price Index$ time series at the descriptive analysis stage of time series tells us nonstationarity in our time series. Lets use ADF and PP tests,
+
+**Using ADF (Augmented Dickey-Fuller) test :** <br />
+
+Lets confirm the non-stationarity using Dickey-Fuller Test or ADF test. Lets state the hypothesis, <br />
+
+$H_0$ : Time series is Difference non-stationary <br />
+$H_a$ : Time series is Stationary
+
+3 approaches with different method of calculating lag lengths will be considered. We first calculate the lag length and then check the test results. <br />
+
+- First approach, <br />
+
+```{r}
+k = ar(diff(ASXPrice.ts))$order
+print(k) # Lag length
+
+adf.test(ASXPrice.ts, k = k)
+```
+
+- Second approach, <br />
+
+```{r}
+k = trunc(12*((length(ASXPrice.ts)/100)^(1/4)))
+print(k)
+adf.test(ASXPrice.ts, k = k)
+```
+
+
+- Third approach using default value of lag length, which is k=⌈(N−1)1/3⌉. <br />
+
+```{r}
+test  = adf.test(ASXPrice.ts)
+test$parameter
+print(test)
+```
+
+From all versions of the test, since p-value > 0.05, we fail to reject null hypothesis of non stationarity. we can conclude that the series is **non stationary** at 5% level of significance.
+
+**Using PP (Phillips-Perron) test :** <br /> 
+
+The null and alternate hypothesis are same as ADF test. For the PP test, we have two options for the lag length. If lshort parameter is set to TRUE we get k=⌈4∗(N/100)1/4)⌉, otherwise we get k=⌈12∗(N/100)1/4)⌉. 
+
+```{r}
+PP.test(ASXPrice.ts, lshort = TRUE)
+PP.test(ASXPrice.ts, lshort = FALSE)
+```
+
+According to the 2 PP tests, ASX Price Index series is **non stationary** at 5% level.
+
+#### Conclusion from descriptive analysis:
+   
+- From the time series plot, ACF, PACF plots, ADF and PP tests, we found our ASX Price Index response is **non stationary**. **Differencing is required** to fix this. 
+- Trend is **not normal** and carries **increasing variance**. Thus **Box-cox transformation is required**, unless it gets fixed by differencing.
+
+Lets perform with Box-Cox transformation,
+
+### Transformations
+
+#### Box-Cox transformation to improve normality or variance
+
+To improve normality and increasing variance in our ASX Price Index time series, lets test Box-Cox transformations on the series.
+
+```{r}
+lambda = BoxCox.lambda(ASXPrice.ts, method = "loglik")
+BC.ASXPrice.ts = BoxCox(ASXPrice.ts, lambda = lambda)
+```
+
+#### Check Normality and improvement in variance of transformed ASX series
+
+Visually comparing the time series plots before and after box-cox transformation,
+
+```{r}
+par(mfrow=c(2,1))
+plot(BC.ASXPrice.ts,ylab='ASX Price Index',xlab='Time',
+     type='o', main="Box-Cox Transformed ASX Price Index Time Series")
+points(y=BC.ASXPrice.ts,x=time(BC.ASXPrice.ts), pch=as.vector(season(BC.ASXPrice.ts)))
+
+plot(ASXPrice.ts,ylab='ASX Price Index',xlab='Time',
+     type='o', main="Original ASX Price Index Time Series")
+points(y=ASXPrice.ts,x=time(ASXPrice.ts), pch=as.vector(season(ASXPrice.ts)))
+par(mfrow=c(1,1))
+```
+
+From the plot, almost no improvement in the variance of the time series is visible after BC transformation. Lets check for normality using shapiro test,
+
+```{r}
+shapiro.test(BC.ASXPrice.ts)
+```
+From the Shapiro-Wilk test, since p < 0.05 significance level, we reject the null hypothesis that states the data is normal. Thus, **BC Transformed ASX Price Index is not normal**.
+
+Now, lets perform Differencing with the aim to improve stationarity in our ASX Price Index time series.
+
+### Differencing to improve Stationarity
+
+The ACF, PACF and time series plots at the descriptive analysis stage of time series tells us nonstationarity in our time series. This was confirmed using ADF and PP tesdt. This non-stationarity is still present in BC transformed series as no actions are taken yet to flatten the trend curve. Lets confirm statistically,
+
+#### Check Stationarity of BC transformed ASX series
+
+Lets check if transformation has improved stationarity of our non-stationary ASX Price Index series. <br />
+
+**Using ADF test** <br />
+
+```{r}
+adf.BC.ASXPrice.ts = ur.df(BC.ASXPrice.ts, type = "none", lags = 1, selectlags = "AIC")
+summary(adf.BC.ASXPrice.ts)
+```
+
+**Using PP test** <br />
+
+```{r}
+PP.test(BC.ASXPrice.ts, lshort = TRUE)
+PP.test(BC.ASXPrice.ts, lshort = FALSE)
+```
+
+In all cases, Since p-value > 0.05, we fail to reject null hypothesis of non stationarity. we can conclude that the **BC transformed ASX Price Index series is non stationary** at 5% level of significance.
+
+#### Ordinary or Seasonal Differencing
+
+Since no seasonality was observed at the descriptive analysis stage (from ACF, PACF or time series plot), we expect ordinary differencing should suffice. Lets compare the seasonally differenced and ordinary differenced series w.r.t the original time series.
+
+```{r}
+BC.ASXPrice.ts.Orddiff = diff(BC.ASXPrice.ts, differences = 1) # First Ordinary difference
+BC.ASXPrice.ts.Seasdiff = diff(BC.ASXPrice.ts, differences = 1, lag=12) # First seasonal difference
+
+par(mfrow=c(3,1))
+
+plot(BC.ASXPrice.ts.Orddiff,ylab='Landings in metric tons',
+     xlab='Year',main = "First Ordinary Differenced Box-Cox Transformed ASX Price Index Time Series")
+points(y=BC.ASXPrice.ts.Orddiff,x=time(BC.ASXPrice.ts.Orddiff), pch=as.vector(season(BC.ASXPrice.ts.Orddiff)))
+
+plot(BC.ASXPrice.ts.Seasdiff,ylab='Landings in metric tons',
+     xlab='Year',main = "First Seasonal Differenced Box-Cox Transformed ASX Price Index Time Series")
+points(y=BC.ASXPrice.ts.Seasdiff,x=time(BC.ASXPrice.ts.Seasdiff), pch=as.vector(season(BC.ASXPrice.ts.Seasdiff)))
+
+plot(ASXPrice.ts,ylab='ASX Price Index',xlab='Time',
+     type='o', main="Original ASX Price Index Time Series")
+points(y=ASXPrice.ts,x=time(ASXPrice.ts), pch=as.vector(season(ASXPrice.ts)))
+
+par(mfrow=c(1,1))
+```
+As expected, seasonal differencing is useless in this series. Ordinary differencing of first order makes the series look much more stationary. Lets confirm statistically,
+
+```{r}
+adf.BC.ASXPrice.ts.Orddiff = ur.df(BC.ASXPrice.ts.Orddiff, type = "none", lags = 1, selectlags = "AIC")
+summary(adf.BC.ASXPrice.ts.Orddiff)
+
+PP.test(BC.ASXPrice.ts.Orddiff, lshort = TRUE)
+PP.test(BC.ASXPrice.ts.Orddiff, lshort = FALSE)
+
+```
+
+From the ADF and PP tests, Since p-value < 0.05, we reject the null hypothesis of non stationarity. Thus, **First order Ordinary Differenced BC transformed ASX Price Index series is Stationary** at 5% level of significance.
+
+Note, 1st Order Differenced BC transformed ASX Price Index is still not normal. We proceed as such.
+
+```{r}
+shapiro.test(BC.ASXPrice.ts.Orddiff)
+```
+
+#### Conclusion after BC transformation and Differencing
+
+The First order Ordinary Differenced BC transformed ASX Price Index series is Stationary and not normal. BC transformation was not affective.
+
+
+### Decomposition
+
+To observe the individual effects of the existing components and historical effects occurred in the past, lets perform decomposition of the ASX Price Index time series. The time series can be decomposed into are seasonal, trend and remainder components.
+
+Three main decomposition methods for time series are known, classical decomposition, X-12-ARIMA decomposition and Loess (STL) decomposition.
+
+#### Classical decomposition
+
+To implement the classical decomposition, we use decompose() function from the stats package. 
+
+```{r}
+fit.classical.add <- decompose(ASXPrice.ts, type="additive")
+plot(fit.classical.add)
+
+fit.classical.mult <- decompose(ASXPrice.ts, type="multiplicative")
+plot(fit.classical.mult)
+```
+
+Notice that a seasonal component was extracted from the series which wasn't identified during the descriptive analysis stage. We got very similar estimates from the additive and multiplicative methods. It seems from the remainder series that the multiplicative model handles the decomposition slightly better (lesser variance).
+
+#### X-12-ARIMA decomposition
+
+Although using the classical decomposition, a seasonal component was identified, we do not know how significant this seasonal effect is. X-12-ARIMA decomposition can help us detect the significance of the seasonal component. We use the function x12() to implement the X-12-ARIMA decomposition. 
+
+```{r}
+fit.x12 = x12(ASXPrice.ts)
+plot(fit.x12 , sa=TRUE , trend=TRUE)
+```
+From the plot, we can see the Seasonally Adjusted series follows the original series very closely (especially during earlier years). This implies, that the original series is not affected by seasonality much, meaning seasonality is less significant in the ASX Price Index series. On the contrary, the Trend series deviates quite a lot from the original series (especially at the ups and downs), implying the Original series has significant trend component.
+
+At this point, we believe the original series has very less seasonal component. Lets confirm this using SI (Seasonal & Irregular) Chart and also check irregular component's contribution to the original series. SI is basically the Original series minus the trend component, which leaves behind the Seasonal and Irregular component (hence the name SI). 
+
+```{r}
+plotSeasFac(fit.x12)
+```
+The green points represent the SIs obtained from the time series, while the solid black line shows the seasonal component. 
+
+SI charts are useful in determining whether short-term movements are caused by seasonal or irregular influences. In the graph above, the SIs can be seen to fluctuate erratically, which indicates the time series under analysis is dominated by its irregular component.
+
+SI charts are also used to identify seasonal breaks, moving holiday patterns and extreme values in a time series. Since the seasonal pattern changes randomly over the 12 months, no particular intervention point is identified. We did not identify any intervention points at the descriptive analysis stage as well (from the Time series plot).
+
+In this plot, replaced SI ratios are the SI ratios with the extreme values replaced. It is also observed from SI ratios that we have outliers or influential observations for almost all the 12 months (especially Nov and Aug). Since we identify too many influential observations, it is fair to say that they are likely not outliers.
+
+#### STL decomposition
+
+Another decomposition method, STL has advantage of flexibility over classical decomposition. stl() function is used with t.window and s.window arguments to control rate of change of trend and seasonal components. Lets set t.window to 15 and look the STL decomposed plots,
+
+```{r}
+stl.ASXPrice.ts <- stl(window(ASXPrice.ts,start=c(2004,1)), t.window=15, s.window="periodic", robust=TRUE)
+plot(stl.ASXPrice.ts)
+```
+
+In this output, the first plot is the smoothed version of the original time series. The second one shows the seasonal component. The third one is for the trend component and the last one is the time series bar chart for the remaining series. 
+
+We can display seasonal sub-series using the monthplot() function. This helps us to get a sense of the variation in the seasonal component over time.
+
+```{r warning=FALSE}
+monthplot(stl.ASXPrice.ts$time.series[,"seasonal"],choice = "seasonal", main="Seasonal sub-series plot of the 
+          seasonal component of ASX series", ylab="Seasonal")
+```
+We get only mean levels in this plot because seasonal component repeats itself without changing. Lowest seasonal ASX Price Index value occurs in September and highest in April.
+
+We can also display a monthly trend component by setting choice = "trend".
+
+```{r}
+monthplot(stl.ASXPrice.ts,choice = "trend", main="Seasonal sub-series plot of the 
+          seasonal component of ASX series", ylab="Trend")
+```
+
+From this visualization, we can observe the same trend pattern for each month but with slight change in variance over the months.
+
+After having the decomposition, we can adjust the series for seasonality by subtracting the seasonal component from the original series using the following code chunk,
+
+```{r}
+par(mfrow=c(2,1))
+plot(seasadj(stl.ASXPrice.ts), ylab='ASX Price Index',xlab='Time', main = "Seasonally adjusted ASX Price Index")
+points(y=seasadj(stl.ASXPrice.ts),x=time(seasadj(stl.ASXPrice.ts)), pch=as.vector(season(seasadj(stl.ASXPrice.ts))))
+
+plot(ASXPrice.ts,ylab='ASX Price Index',xlab='Time',
+     type='o', main="Original ASX Price Index Time Series")
+points(y=ASXPrice.ts,x=time(ASXPrice.ts), pch=as.vector(season(ASXPrice.ts)))
+par(mfrow=c(1,1))
+```
+
+No change is visually seen in the seasonally adjusted series compared to the original series. Thus, seasonal component is insignificant.
+
+After the decomposition, we can adjust for trend as well. For this, we need to subtract the trend component from the original series. The following code chunk illustrates this approach.
+
+```{r}
+par(mfrow=c(2,1))
+stl.ASXPrice.ts.trend = stl.ASXPrice.ts$time.series[,"trend"] # Extract the trend component from the output
+stl.ASXPrice.ts.trend.adjusted = ASXPrice.ts - stl.ASXPrice.ts.trend
+
+plot(stl.ASXPrice.ts.trend.adjusted, ylab='ASX Price Index',xlab='Time', main = "Trend adjusted ASX Price Index")
+points(y=stl.ASXPrice.ts.trend.adjusted,x=time(stl.ASXPrice.ts.trend.adjusted), pch=as.vector(season(stl.ASXPrice.ts.trend.adjusted)))
+
+plot(ASXPrice.ts,ylab='ASX Price Index',xlab='Time',
+     type='o', main="Original ASX Price Index Time Series")
+points(y=ASXPrice.ts,x=time(ASXPrice.ts), pch=as.vector(season(ASXPrice.ts)))
+par(mfrow=c(1,1))
+```
+The Trend adjusted series is completely different from the original series, implying the trend component of the series is the most influential component of the original series.
+
+#### Conclusion of Decomposition
+
+Seasonal component is insignificant when comparing seasonally adjusted series with the original series. From the SI ratio, we found irregular component dominating the seasonal component. No significant intervention point or outliers were identified. The trend component of the series is the most influential component of the original series.
+
+
+### Modeling
+
+A regression method, so called, Distributed lag models (DLMs) which uses several lags of a predictor variable in the model as explanatory variables will be applied. Based on whether the lags are known (Finite DLM) or undetermined (Infinite DLM), 4 major modelling methods will be tested, namely, <br />
+
+- basic Distributed lag model, 
+- Polynomial DLM, 
+- Koyck transformed geometric DLM,
+- and Autoregressive DLM.
+
+### Fit Finite DLM 
+
+The response of a finite DLM model with 1 regressor is represented as shown below, 
+
+$Y_t = \alpha + \sum_{s=0}^{q} \beta_s X_{t-s} + \epsilon_t$ <br />
+
+where,
+
+- $\alpha$ is intercept
+- $\beta_s$ is coefficient of s lagged response $X_t$ 
+- and $\epsilon_t$ is the error term
+
+In our dataset, we have 3 regressors, hence the model equation has X1, X2 and X3 instead of just one regressor.
+
+Now, lets use AIC and BIC score to find the best lag length for Finite DLM model,
+
+```{r warning=FALSE}
+finiteDLMauto(formula = ASX.price ~ Gold.price + Crude.Oil..Brent._USD.bbl + Copper_USD.tonne, data = ASX, q.min = 1, q.max = 12,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+
+q = 12 has the smallest AIC and BIC scores. Fit model with q = 12,
+
+```{r}
+DLM.model = dlm(formula = ASX.price ~ Gold.price + Crude.Oil..Brent._USD.bbl + Copper_USD.tonne, data = ASX, q = 12)
+```
+
+**Note -** we are using ASX.price and not the BC.ASXPrice.ts.Orddiff (Differenced and transformed Price Index) as normality is violated in both of these.
+
+#### Diagnostic check for DLM.model (Residual analysis) 
+
+We can apply a diagnostic check using checkresiduals() function from the forecast package. 
+
+```{r}
+checkresiduals(DLM.model$model$residuals) # forecast package
+```
+In this output, <br />
+
+- the time series plot and histogram of residuals, there is an obvious non-random pattern and very high residual values that violate general assumptions.
+- the Ljung-Box test output is displayed. According to this test, the null hypothesis that a series of residuals exhibits no autocorrelation up-to lag 10 is violated. Another test to check serial correlation is Breusch-Godfrey test,
+
+```{r}
+bgtest(DLM.model$model)
+```
+Which has, <br />
+$H_0$ : there is no serial correlation of any order up to p <br />
+$H_a$ : there is serial correlation of any order up to p
+
+According to this test and ACF plot, we can conclude that the **serial correlation left in residuals is highly significant**.
+
+#### Model Summary for Finite DLM model (DLM.model) 
+
+```{r}
+summary(DLM.model)
+```
+
+The Finite DLM model is **significant** at 5% percent significance level with R-squared value value of 39.03% . **None** of the 12 lagged regressors for the 3 regressors are found to be significant. Looking at the values of coefficients, the highest lag effect is seen for the lag of 1 of Crude oil price. However, we need to consider the effect of collinearity on these results. To inspect this issue, we will display variance inflation factors (VIFs). If the value of VIF is greater than 10, we can conclude that the effect of multicollinearity is high.
+
+```{r}
+VIF.DLM.model = vif(DLM.model$model) # variance inflation factors 
+VIF.DLM.model 
+```
+From the VIF values, it is obvious that the estimates of the finite DLM coefficients are suffering from the multicollinearity. To deal with this issue, we can use the restricted least squares method to find parameter estimates. In this approach, some restrictions are placed on the model parameters to reduce the variances of the estimators. In the context of DLMs, we translate the pattern of time effects into the restrictions on parameters. Polynomial DLM model can fix effect of multicollinearity. 
+
+#### Conclusion of Finite DLM model
+
+- Model is significant.
+- Low R-squared value of 39.03% suggests bad fit
+- violations in the test of assumptions
+- Has multicollinearity among the regressors
+
+### Fit Polynomial DLM model
+
+If the lag weights follow a smooth polynomial pattern, then a polynomial DLM model will reduce/remove the multicollinearity. Lets fit a polynomial DLM of order 2 and check if the polynomial component (order 2) reduces multicollinearity. Lets do this for each of the 3 regressors individually.
+
+**For Gold price regressor:** <br />
+
+```{r}
+PolyDLM.goldprice = polyDlm(x = as.vector(GoldPrice.ts), y = as.vector(ASXPrice.ts), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM.goldprice)
+```
+
+Polynomial DLM model with gold price as regressor variable is **insignificant** at 5% significance level.
+
+**For Crude oil price regressor:** <br />
+
+```{r}
+PolyDLM.crudeoilprice = polyDlm(x = as.vector(CrudeOilPrice.ts), y = as.vector(ASXPrice.ts), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM.crudeoilprice)
+```
+
+Polynomial DLM model with crude oil price as regressor variable is **insignificant** at 5% significance level.
+
+**For Copper price regressor:** <br />
+
+```{r}
+PolyDLM.copperprice = polyDlm(x = as.vector(CopperPrice.ts), y = as.vector(ASXPrice.ts), q = 12, k = 2, show.beta = FALSE)
+summary(PolyDLM.copperprice)
+```
+Polynomial DLM model with copper price as regressor variable is **significant** at 5% significance level. Notice that the standard errors of estimators are much less (to the powers of -2 for polynomial DLM vs power of -1 for ordinary finite DLM) than their unconstrained (Finite DLM) counterparts. But the R-squared value is much less (16.66% for polynomial DLM vs 39.02% for ordinary DLM). The 0th and 1st order regressors of copper price variable are significant, but the 2nd order regressor (z.t2) is insignificant. This implies, **the polynomial component of the regressor variable in the model is redundant** and not necessary. Lets check if multicollinearity is fixed,
+
+```{r}
+VIF.PolyDLM.copperprice = vif(PolyDLM.copperprice$model) # variance inflation factors 
+VIF.PolyDLM.copperprice
+```
+Multicollinearity is still significant. 
+
+#### Diagnostic check for Polynomial DLM (Residual analysis) 
+
+```{r}
+checkresiduals(PolyDLM.copperprice$model$residuals) 
+```
+
+In this output, <br />
+
+- the time series plot and histogram of residuals, there is an obvious non-random pattern and very high residual values that violate general assumptions.
+- the Ljung-Box test output is displayed. According to this test, the null hypothesis that a series of residuals exhibits no autocorrelation up-to lag 10 is violated. Another test to check serial correlation is Breusch-Godfrey test,
+
+```{r}
+bgtest(PolyDLM.copperprice$model)
+```
+Which has, <br />
+$H_0$ : there is no serial correlation of any order up to p <br />
+$H_a$ : there is serial correlation of any order up to p
+
+According to this test and ACF plot, we can conclude that the **serial correlation left in residuals is highly significant**.
+
+#### Conclusion of Polynomial DLM model
+
+Thus, because of insignificant order 2 component (z.t2), lower R-squared statistic and no improvement in multicollinearity, and violations in the test of assumptions (residual analysis), Polynomial DLM model is not a good fitting model.
+
+
+### Fit Koyck geometric DLM model
+
+Here the lag weights are positive and decline geometrically. This model is called infinite geometric DLM, meaning there are infinite lag weights. Koyck transformation is applied to implement this infinite geometric DLM model by subtracting the first lag of geometric DLM multiplied by $\phi$. The Koyck transformed model is represented as, <br />
+
+$Y_t = \delta_1 + \delta_2Y_{t-1} + \nu_t$ <br />
+  
+where $\delta_1 = \alpha(1-\phi), \delta_2 = \phi, \delta_3 = \beta$ and the random error after the transformation is $\nu_t = (\epsilon_t -\phi\epsilon_{t-1})$. <br />
+
+The koyckDlm() function is used to implement a two-staged least squares method to first estimate the $\hat{Y}_{t-1}$ and the estimate $Y_{t}$ through simple linear regression.
+Lets deduce Koyck geometric GLM models for each of the 3 regressors individually.
+
+#### For Gold price regressor:
+
+```{r}
+Koyck.GoldPrice = koyckDlm(x = as.vector(ASX$Gold.price) , y = as.vector(ASX$ASX.price) )
+summary(Koyck.GoldPrice$model, diagnostics = TRUE)
+```
+
+The Koyck transformed geometric DLM model with predictor, Gold price is **significant**. From the Weak Instruments line, we conclude that the model at the first stage of the least-squares fitting is significant at 5% level of significance. In this model, both $\delta_1$ and $\delta_2$ are significant, but $\delta_3$ is insignificant at 5% level. Meaning ASX Price index is significantly dependent on Last years ASX price index and is **not** significantly dependent on the current Gold Price. Using the coefficients, $\hat{\phi}$=0.9635, the ASX Price Index will decline quickly at the rate of 0.9635 of last years ASX price Index.
+
+From the Wu-Hausman test result in the model output, we reject the null hypothesis that the correlation between explanatory variable ($Y_{t-1}$) and the error term is zero (There is no endogeneity) at 5% level. So, there is a significant correlation between the explanatory variable and the error term at 5% level.
+
+#### Diagnostic check for Koyck.GoldPrice (Residual analysis) 
+
+```{r}
+checkresiduals(Koyck.GoldPrice$model)
+```
+
+From the Breusch-Godfrey test and ACF plot, serial correlation left in residuals is **not significant**. Also, from the time series plot and histogram of residuals, normality and linearity is not violated. Thus, the general assumptions hold. Thus no assumptions are violated.
+
+#### For Crude oil price regressor:
+
+```{r}
+Koyck.CrudeOilPrice = koyckDlm(x = as.vector(ASX$Crude.Oil..Brent._USD.bbl) , y = as.vector(ASX$ASX.price) )
+summary(Koyck.CrudeOilPrice$model, diagnostics = TRUE)
+```
+The results of the Koyck geometric DLM with predictor, Crude oil are completely identical to that of Gold price koyck DLM. Here too ASX Price index is significantly dependent on Last years ASX price index and is **not** significantly dependent on the current Crude Oil Price.
+
+#### Diagnostic check for Koyck.CrudeOilPrice (Residual analysis) 
+
+```{r}
+checkresiduals(Koyck.CrudeOilPrice$model)
+```
+
+Again, no assumptions are violated. Serial correlations are not significant as per BG test and ACF plot. Also, Normality and Linearity are not violated.
+
+#### For Copper price regressor:
+
+```{r}
+Koyck.CopperPrice = koyckDlm(x = as.vector(ASX$Copper_USD.tonne) , y = as.vector(ASX$ASX.price) )
+summary(Koyck.CopperPrice$model, diagnostics = TRUE)
+```
+Again same results. ASX Price index is significantly dependent on Last years ASX price index and is **not** significantly dependent on the current Copper Price.
+
+#### Diagnostic check for Koyck.CopperPrice (Residual analysis) 
+
+```{r}
+checkresiduals(Koyck.CopperPrice$model)
+```
+
+Again, no assumptions are violated. Serial correlations are not significant as per BG test and ACF plot. Also, Normality and Linearity are not violated.
+
+#### Check for multicollinearity in Koyck DLM models
+
+```{r}
+vif(Koyck.GoldPrice$model) # variance inflation factors 
+vif(Koyck.CrudeOilPrice$model) # variance inflation factors 
+vif(Koyck.CopperPrice$model) # variance inflation factors 
+```
+
+For all 3 Koyck models, multicollinearity is insignificant.
+
+#### Conclusion of Koyck DLM model
+
+All 3 koyck models with individual regressors are significant. Response, ASX Price index is not significantly dependent on the individual regressor variable, rather, ASX Price index is significantly dependent on Last years ASX price index. Multicollinearity is insignificant. None of the test of assumptions are violated. Each of the 3 koyck are good fitting models with high R-squared statistics (>90%).
+
+### Fit Autoregressive Distributed Lag Model
+
+In both Polynomial and Koyck models, the response ASX Price Index cannot be represented using all 3 predictor variables at once (keeping the ). Only one predictor can be chosen at once. Autoregressive Distributed lag model is a flexible and parsimonious infinite DLM which can incorporate all 3 predictors at once. The model is represented as, <br />
+
+$Y_t = \mu + \beta_0 X_t + \beta_1 X_{t-1} + \gamma_1 Y_{t-1} + e_t$ <br />
+
+Similar to the Koyck DLM, it is possible to write this model as an infinite DLM with infinite lag distribution of any shape rather than a polynomial or geometric shape. The model is denoted as ARDL(p,q). To fit the model we will use ardlDlm() function is used. Lets find the best lag length using AIC and BIC score through an iteration. Lets set max lag length to 12.
+
+```{r}
+## Code gist to find the best ARDL(p,q) model as per AIC and BIC scores.
+
+# First create an empty df. Iterate over 144 ARDL (since max lag for response and predictor of ARDL model is 12, i.e, p = q = 12 at max).
+# Save the model's AIC and BIC scores through iteration and display the model with best AIC and BIC scores.
+
+df = data.frame(matrix(
+                vector(), 0, 4, dimnames=list(c(), c("p","q","AIC","BIC"))),
+                stringsAsFactors=F) # create empty dataframe
+
+for(i in 1:12){
+  for(j in 1:12){
+    model4.1 = ardlDlm(formula = ASX.price ~ Gold.price + Crude.Oil..Brent._USD.bbl + Copper_USD.tonne, data = ASX, p = i, q = j)
+    new <- data.frame(i, j, AIC(model4.1$model), BIC(model4.1$model))
+    df[nrow(df) + 1, ] <- new 
+  }
+} # Iterate and save in df 
+
+head(df[order( df[,3] ),],1) # Best model as per AIC
+head(df[order( df[,4] ),],1) # Best model as per BIC
+
+```
+ARDL(12,4) and  ARDL(1,12) are the best models as per AIC and BIC scores respectively. Now, lets fit these 2 models,
+
+#### Model summary for ARDL(12,4)
+
+```{r}
+ARDL.12x4.ASXPrice = ardlDlm(formula = ASX.price ~ Gold.price + Crude.Oil..Brent._USD.bbl + Copper_USD.tonne, data = ASX, p = 12, q = 4)
+summary(ARDL.12x4.ASXPrice)
+```
+
+The Autoregressive Distributed Lag Model with 12 lags of independent variable (p=12) and 4 lags of dependent variable (q=4) is found to be significant at 5% significance level. It has high R-squared value of 96.17% indicating very good fit although many coefficients are insignificant in this model.
+
+#### Diagnostic check for ARDL(12,4) model (Residual analysis) 
+
+```{r}
+checkresiduals(ARDL.12x4.ASXPrice$model)
+```
+From the Breusch-Godfrey test and ACF plot, serial correlation left in residuals is **not significant**. Also, from the time series plot and histogram of residuals, normality and linearity is not violated. Thus, the general assumptions hold and no assumptions are violated.
+
+#### Model summary for ARDL(1,12)
+
+```{r}
+ARDL.1x12.ASXPrice = ardlDlm(formula = ASX.price ~ Gold.price + Crude.Oil..Brent._USD.bbl + Copper_USD.tonne, data = ASX, p = 1, q = 12)
+summary(ARDL.1x12.ASXPrice)
+```
+
+The Autoregressive Distributed Lag Model with 1 lags of independent variable (p=1) and 12 lags of dependent variable (q=12) is found to be significant at 5% significance level. It has R-squared value of 94.62% which is lesser compared to ARDL(12,4) model. 
+
+#### Diagnostic check for ARDL(1,12) model (Residual analysis) 
+
+```{r}
+checkresiduals(ARDL.1x12.ASXPrice$model)
+```
+Results of residual analysis for ARDL(1,12) are same as ARDL(12,4). No assumptions are violated.
+
+#### Compare ARDL(12,4) and ARDL(1,12)
+
+- ARDL(12,4) has better fit as per R-squared statistic (96.17% vs 94.62%)
+
+#### Check for multicollinearity in ARDL models
+
+For ARDL(12,4), <br />
+```{r}
+vif(ARDL.12x4.ASXPrice$model)
+```
+
+For ARDL(1,12), <br />
+```{r}
+vif(ARDL.1x12.ASXPrice$model)
+```
+
+For both the ARDL models, multicollinearity is significant.
+
+#### Conclusion of ARDL models
+
+Best model as per AIC is ARDL(12,4) and as per BIC is ARDL(1,12). Both are significant. ARDL(12,4) has better fit as per R-squared statistic (96.17% vs 94.62%). Multicollinearity is significant for both ARDL(12,4) and ARDL(1,12). Diagnostic check for the model suggests presence of no serial correlation and no violation of general assumptions for both the models.
+
+
+### Detailed conclusion on the most appropriate model including context (Model Selection)
+
+Lets summarize the 4 models, <br />
+
+**Fit Finite DLM:** <br /> 
+
+- All 3 regressors present. Model is significant 
+- All 12 lagged regressors for the 3 variables are insignificant 
+- R-Squared of 39.03% suggests not a good fit
+- Multicollinearity is significant
+- Diagnostic check for the model suggests presence of significant serial correlation and violation of general assumptions
+
+**Polynomial DLM:** <br /> 
+
+- 3 separate models for each regressor. 2 are insignificant, 1 (Copper Price) is significant
+- Polynomial DLM model with Copper Price as regressor is significant
+- 2nd order regressor (z.t2) is insignificant implying polynomial component of the regressor variable is redundant
+- R-Squared of 16.66% suggests not a good fit
+- Multicollinearity is significant
+- Diagnostic check for the model suggests presence of significant serial correlation and violation of general assumptions
+
+**Koyck transformed geometric DLM:** <br /> 
+
+- 3 separate models for each regressor, Gold, Crude oil and Copper prices. All 3 is significant.
+- R-squared of 94.88%, 94.9% and 94.85% for regressors, Gold, Crude oil and Copper prices suggest good fit
+- For all 3 koyck models response, ASX Price index is significantly dependent on Last years ASX price index and is **not** significantly dependent on their respective regressor.
+- Multicollinearity is insignificant
+- Diagnostic check for the model suggests presence of no serial correlation and no violation of general assumptions.
+
+**Autoregressive DLM:** <br /> 
+
+- All 3 regressors present.
+- Best model as per AIC is ARDL(12,4) and as per BIC is ARDL(1,12). Both are significant.
+- Mix of significant and insignificant lag coefficients are present.
+- ARDL(12,4) has better fit as per R-squared statistic (96.17% vs 94.62%)
+- Multicollinearity is significant for both ARDL(12,4) and ARDL(1,12)
+- Diagnostic check for the model suggests presence of no serial correlation and no violation of general assumptions for both the models.
+
+### Model Selection
+
+Lets compare all the models generated based on AIC and BIC scores. Also lets comp 
+
+#### Using AIC and BIC scores
+
+Akaike’s (1973) Information Criterion (AIC) and Bayesian Information Criterion (BIC) are useful model specification and selection criterion.
+
+```{r}
+AICBIC = data.frame(
+            model = c("Finite DLM model with all 3 predictors", "Polynomial DLM with gold price as predictor", "Polynomial DLM with crude oil price as predictor", "Polynomial DLM with copper price as predictor", "Koyck DLM with gold price as predictor", "Koyck DLM with crude oil price as predictor", "Koyck DLM with copper price as predictor", "ARDL(1,12) model", "ARDL(12,4) model"),
+            AIC = c(AIC(DLM.model), AIC(PolyDLM.goldprice), AIC(PolyDLM.crudeoilprice), AIC(PolyDLM.copperprice), AIC(Koyck.GoldPrice), AIC(Koyck.CrudeOilPrice), AIC(Koyck.CopperPrice), AIC(ARDL.1x12.ASXPrice), AIC(ARDL.12x4.ASXPrice)),
+            BIC = c(BIC(DLM.model), BIC(PolyDLM.goldprice), BIC(PolyDLM.crudeoilprice), BIC(PolyDLM.copperprice), BIC(Koyck.GoldPrice), BIC(Koyck.CrudeOilPrice), BIC(Koyck.CopperPrice), BIC(ARDL.1x12.ASXPrice), AIC(ARDL.12x4.ASXPrice))
+            )
+
+AICBIC[order(AICBIC[,2], AICBIC[,2]),]
+```
+**Conclusion from AIC and BIC scores:** <br />
+
+ADRL(12,4) is the best fitting model with lowest AIC and BIC scores of all models.
+
+#### Error Estimation
+
+Another way to test the fit of a model is by checking the error estimates. Lower the error estimates, better the models fit. Lets perform error estimation for all the fitted models and compare the results. This is done using the gof(), goodness of fit function which computes, <br />
+
+- mean absolute error (MAE), 
+- mean squared error (MSE), 
+- mean percentage error (MPE), 
+- symmetric mean absolute percentage error (sMAPE), 
+- mean absolute percentage error (MAPE), 
+- mean absolute scaled error (MASE), 
+- mean relative absolute error (MRAE), 
+- geometric mean relative absolute error (GMRAE), 
+- mean bounded relative absolute error (MBRAE), 
+- unscaled MBRAE (UMBRAE) for distributed lag models.
+
+```{r}
+GoF(DLM.model, PolyDLM.goldprice, PolyDLM.crudeoilprice, PolyDLM.copperprice, Koyck.GoldPrice, Koyck.CrudeOilPrice, Koyck.CopperPrice, ARDL.1x12.ASXPrice, ARDL.12x4.ASXPrice)
+```
+**Conclusion from Error Estimation:** <br />
+
+From error estimates table, all the 9 error estimates are lowest for the ADRL(12,4) model.
+
+### Detailed Graphical and statistical tests of assumptions for $ARDL(12,4)$ model (Residual Analysis)
+
+Residual analysis to test model assumptions. <br />
+
+Lets perform a detailed ***Residual Analysis*** to check if any model assumptions have been violated. 
+
+The estimator error (or residual) is defined by: <br />
+
+$\hat{\epsilon_i}$ = $Y_i$ - $\hat{Y_i}$ (i.e. observed value less -
+trend value)
+
+The following problems are to be checked,
+
+  1. linearity in distribution of error terms
+  2. The mean value of residuals is zero 
+  3. Serial autocorrelation
+  4. Normality of distribution of error terms
+
+Lets first apply diagnostic check using checkresiduals() function, 
+
+``` {r}
+checkresiduals(ARDL.12x4.ASXPrice)
+```
+
+1. From the Residuals plot, linearity is not violated as the residuals are randomly distributed accross the mean. Thus, **linearity in distribution of error terms is not violated**
+
+2. To test mean value of residuals is zero or not, lets calculate mean value of residuals as,
+
+```{r}
+mean(ARDL.12x4.ASXPrice$model$residuals)
+```
+
+As mean value of residuals is very very close to 0, **zero mean residuals is not violated**
+
+3. In the checkresiduals output, the Ljung-Box test output is displayed. According to this test, the null hypothesis that a series of residuals exhibits no autocorrelation up-to lag 10 is violated. Another test to check serial correlation is Breusch-Godfrey test,
+
+```{r}
+bgtest(ARDL.12x4.ASXPrice$model)
+```
+
+Which has, <br />
+$H_0$ : there is no serial correlation of any order up to p <br />
+$H_a$ : there is serial correlation of any order up to p
+
+According to this test and ACF plot, we can conclude that the **serial correlation left in residuals is insignificant**.
+
+4. From the histogram shown by checkresiduals(), residuals seem to follow normality. Lets test this statistically,
+
+$H_0$ : Time series is Normally distributed <br />
+$H_a$ : Time series is not normal
+
+```{r}
+shapiro.test(ARDL.12x4.ASXPrice$model$residuals)
+```
+
+From the Shapiro-Wilk test, since p > 0.05 significance level, we cannot reject the null hypothesis that states the data is normal. Thus, residuals of ARDL(12,4) are **normally** distributed.
+
+
+**Summarizing residual analysis on $full$ model:**
+
+Assumption 1: The error terms are randomly distributed and thus show linearity: ***Not violated*** <br /> 
+Assumption 2: The mean value of E is zero (zero mean residuals): ***Not violated*** <br /> 
+Assumption 4: The error terms are independently distributed, i.e. they are not autocorrelated: ***Not violated*** <br /> 
+Assumption 5: The errors are normally distributed. ***not Violated*** <br /> 
+
+### Final Analysis Conclusion and Best Fitting model:
+
+The best fitting model we could achieved for monthly averages of ASX All Ordinaries (Ords) Price Index using the regressors, Gold price (AUD), Crude Oil (Brent, USD/bbl) and Copper (USD/tonne) is ADRL(12,4) model. This is backed by AIC, BIC and error estimates of Autoregressive Distributed Lag ADRL(12,4) model. This model has R-squared of 96.17% which is the highest of all models. Although transformation and 1st order ordinary differencing improved stationarity, normality could not be achieved. Hence the raw (without any transformation) response, ASX Price Index is used for modelling. Residual analysis of ARDL(12,4) shows no serial correlation and no assumptions are violated. This model has significant multicollinearity.
+
+
+
+
+
+
+
+
+
+
+
+
