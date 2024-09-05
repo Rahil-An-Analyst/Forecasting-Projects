@@ -1,7 +1,7 @@
 # Project 1: Evaluating the Best Regression Model for Forecasting ASX Price Index
 
 ## Report
-Directly view report here -
+View report here -
 (https://rpubs.com/rahil1998/1216686)
 
 ## Overview
